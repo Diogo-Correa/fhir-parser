@@ -3,10 +3,50 @@
 
 generator client {
   provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
+}
+
+model MappingConfiguration {
+  id               String         @id @default(cuid())
+  name             String         @unique
+  description      String?
+  sourceType       SourceType
+  fhirResourceType String
+  direction        Direction
+  fieldMappings    FieldMapping[]
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([name])
+  @@map("mapping_configurations")
+}
+
+model FieldMapping {
+  id                     String               @id @default(cuid())
+  sourcePath             String
+  targetFhirPath         String
+  transformationType     String?
+  transformationDetails  Json?
+  defaultValue           String?
+  mappingConfigurationId String
+  mappingConfiguration   MappingConfiguration @relation(fields: [mappingConfigurationId], references: [id], onDelete: Cascade)
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  @@index([mappingConfigurationId])
+  @@map("field_mappings")
+}
+
+enum SourceType {
+  JSON
+  CSV
+}
+
+enum Direction {
+  TO_FHIR
+  FROM_FHIR
 }
