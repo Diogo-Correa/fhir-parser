@@ -1,3 +1,4 @@
+import { buildJsonSchemas } from 'fastify-zod';
 import { z } from 'zod';
 
 export const transformRequestBodySchema = z.object({
@@ -10,3 +11,10 @@ export const transformRequestBodySchema = z.object({
 });
 
 export type TransformRequestBody = z.infer<typeof transformRequestBodySchema>;
+
+export const { schemas: transformSchemas, $ref } = buildJsonSchemas(
+	{
+		transformRequestBodySchema,
+	},
+	{ $id: 'transformSchemas' },
+);

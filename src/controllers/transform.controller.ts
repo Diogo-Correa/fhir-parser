@@ -2,6 +2,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { TransformRequestBody } from '../schemas/transform.schema';
 import { InvalidInputDataError } from '../services/errors/InvalidInputDataError';
 import { MappingConfigurationNotFoundError } from '../services/errors/MappingConfigurationNotFoundError';
+import { transformData } from '../services/transform.service';
 
 export async function handleTransformRequest(
 	request: FastifyRequest<{ Body: TransformRequestBody }>,
@@ -19,7 +20,7 @@ export async function handleTransformRequest(
 		});
 
 		reply.header('Content-Type', result.contentType);
-		reply.send(result.transfomedData);
+		reply.send(result.transformedData);
 	} catch (error) {
 		if (error instanceof MappingConfigurationNotFoundError)
 			reply.notFound(`Mapping configuration '${mappingConfigName}' not found`);
