@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: postgres_server
+    environment:
+      POSTGRES_USER: fhir-parser
+      POSTGRES_PASSWORD: tccuff123
+      POSTGRES_DB: fhir-parser
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

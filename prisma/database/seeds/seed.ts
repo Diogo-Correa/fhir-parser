@@ -1,90 +1,163 @@
-import { Direction, SourceType } from '@prisma/client';
-import { db } from '../../../src/lib/prisma';
+import { Direction, PrismaClient, SourceType } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 async function main() {
 	console.log('Start seeding ...');
 
-	// Exemplo: Mapeamento de um CSV simples para Recurso Patient FHIR
-	const csvToPatient = await db.mappingConfiguration.upsert({
+	// URLs Canônicas (ajuste conforme necessário ou processe as SDs primeiro)
+	const brCorePatientUrl =
+		'https://br-core.saude.gov.br/fhir/StructureDefinition/br-core-patient';
+	const observationBaseUrl =
+		'http://hl7.org/fhir/StructureDefinition/Observation';
+	const patientBaseUrl = 'http://hl7.org/fhir/StructureDefinition/Patient'; // URL da SD base do Patient
+
+	// --- Mapeamento CSV -> Patient (TO_FHIR) ---
+	// Validado contra br-core-patient OU Patient base se br-core não processado
+	await prisma.mappingConfiguration.upsert({
 		where: { name: 'CsvToPatientBasic' },
-		update: {},
+		update: { structureDefinitionUrl: brCorePatientUrl }, // Tenta validar contra o perfil BR
 		create: {
 			name: 'CsvToPatientBasic',
 			description: 'Maps a simple CSV to FHIR Patient resource',
 			sourceType: SourceType.CSV,
 			fhirResourceType: 'Patient',
 			direction: Direction.TO_FHIR,
+			structureDefinitionUrl: brCorePatientUrl, // Especifica contra qual SD validar
 			fieldMappings: {
 				create: [
-					{ sourcePath: 'id_paciente', targetFhirPath: 'Patient.id' }, // Mapeia coluna 'id_paciente' para Patient.id
+					// Paths relativos à raiz do Patient
+					{ sourcePath: 'id_paciente', targetFhirPath: 'id' },
+					{ sourcePath: 'nome_completo', targetFhirPath: 'name[0].text' }, // Mapeia para o primeiro nome, campo text
 					{
-						sourcePath: 'nome_completo',
-						targetFhirPath: 'Patient.name[0].text',
-					}, // Mapeia 'nome_completo' para o texto do primeiro nome
-					{
-						sourcePath: 'data_nascimento',
-						targetFhirPath: 'Patient.birthDate',
-					}, // Mapeia 'data_nascimento' para data de nascimento
-					{ sourcePath: 'genero', targetFhirPath: 'Patient.gender' }, // Mapeia 'genero' para Patient.gender
+						sourcePath: 'nome_oficial',
+						targetFhirPath: "name[?use='official'].text",
+					}, // Exemplo: Mapeando para nome oficial
+					{ sourcePath: 'data_nascimento', targetFhirPath: 'birthDate' },
+					{ sourcePath: 'genero', targetFhirPath: 'gender' },
+					{ sourcePath: 'cpf', targetFhirPath: 'identifier[0].value' }, // Mapeamento simples para valor do primeiro identificador
+					{ sourcePath: 'cpf_system', targetFhirPath: 'identifier[0].system' }, // Ex: 'urn:oid:2.16.840.1.113883.13.236' (oid do CPF)
+					{ sourcePath: 'cpf_use', targetFhirPath: 'identifier[0].use' }, // Ex: 'official'
+					{ sourcePath: 'ativo', targetFhirPath: 'active' }, // Ex: true/false no CSV
 				],
 			},
 		},
 	});
-	console.log(
-		`Created mapping configuration with id: ${csvToPatient.id} and name: ${csvToPatient.name}`,
-	);
+	console.log('Upserted mapping: CsvToPatientBasic');
 
-	// Exemplo: Mapeamento de JSON para Observation FHIR
-	const jsonToObservation = await db.mappingConfiguration.upsert({
+	// --- Mapeamento JSON -> Observation (TO_FHIR) ---
+	// Validado contra a Observation base
+	await prisma.mappingConfiguration.upsert({
 		where: { name: 'JsonToObservationVitals' },
-		update: {},
+		update: { structureDefinitionUrl: observationBaseUrl },
 		create: {
 			name: 'JsonToObservationVitals',
-			description:
-				'Maps a simple JSON payload to FHIR Observation resource for vital signs',
+			description: 'Maps a simple JSON payload to FHIR Observation resource',
 			sourceType: SourceType.JSON,
 			fhirResourceType: 'Observation',
 			direction: Direction.TO_FHIR,
+			structureDefinitionUrl: observationBaseUrl,
 			fieldMappings: {
 				create: [
-					{ sourcePath: 'vitalSign.id', targetFhirPath: 'Observation.id' },
-					{
-						sourcePath: 'vitalSign.status',
-						targetFhirPath: 'Observation.status',
-					}, // ex: 'final'
+					// Paths relativos à raiz da Observation
+					{ sourcePath: 'vitalSign.id', targetFhirPath: 'id' },
+					{ sourcePath: 'vitalSign.status', targetFhirPath: 'status' },
 					{
 						sourcePath: 'vitalSign.code',
-						targetFhirPath: 'Observation.code.coding[0].code',
-					}, // ex: '8480-6' (LOINC para Pressão Sistólica)
-					{
-						sourcePath: 'vitalSign.display',
-						targetFhirPath: 'Observation.code.coding[0].display',
-					}, // ex: 'Systolic blood pressure'
-					{
-						sourcePath: 'vitalSign.value',
-						targetFhirPath: 'Observation.valueQuantity.value',
-					}, // ex: 120
-					{
-						sourcePath: 'vitalSign.unit',
-						targetFhirPath: 'Observation.valueQuantity.unit',
-					}, // ex: 'mmHg'
-					{
-						sourcePath: 'vitalSign.system',
-						targetFhirPath: 'Observation.valueQuantity.system',
-					}, // ex: 'http://unitsofmeasure.org'
-					{
-						sourcePath: 'vitalSign.effectiveDateTime',
-						targetFhirPath: 'Observation.effectiveDateTime',
+						targetFhirPath: 'code.coding[0].code',
 					},
 					{
-						sourcePath: 'patientId',
-						targetFhirPath: 'Observation.subject.reference',
-					}, // ex: 'Patient/123'
+						sourcePath: 'vitalSign.display',
+						targetFhirPath: 'code.coding[0].display',
+					},
+					{
+						sourcePath: 'vitalSign.codeSystem',
+						targetFhirPath: 'code.coding[0].system',
+					}, // Ex: 'http://loinc.org'
+					{
+						sourcePath: 'vitalSign.value',
+						targetFhirPath: 'valueQuantity.value',
+					},
+					{
+						sourcePath: 'vitalSign.unit',
+						targetFhirPath: 'valueQuantity.unit',
+					},
+					{
+						sourcePath: 'vitalSign.valueSystem',
+						targetFhirPath: 'valueQuantity.system',
+					}, // Ex: 'http://unitsofmeasure.org'
+					{
+						sourcePath: 'vitalSign.effectiveDateTime',
+						targetFhirPath: 'effectiveDateTime',
+					},
+					{ sourcePath: 'patientId', targetFhirPath: 'subject.reference' }, // Ex: 'Patient/123'
 				],
 			},
 		},
 	});
-	console.log(`Created mapping configuration with id: ${jsonToObservation.id}`);
+	console.log('Upserted mapping: JsonToObservationVitals');
+
+	// --- Mapeamento Patient -> CSV (FROM_FHIR) ---
+	// Valida os campos FHIR lidos contra br-core-patient OU Patient base
+	await prisma.mappingConfiguration.upsert({
+		where: { name: 'PatientToCsvBasic' },
+		update: { structureDefinitionUrl: brCorePatientUrl },
+		create: {
+			name: 'PatientToCsvBasic',
+			description: 'Maps FHIR Patient resources to a simple CSV',
+			sourceType: SourceType.CSV, // Target é CSV
+			fhirResourceType: 'Patient', // Source é Patient
+			direction: Direction.FROM_FHIR,
+			structureDefinitionUrl: brCorePatientUrl, // Valida os paths FHIR lidos
+			fieldMappings: {
+				create: [
+					// targetFhirPath é relativo ao recurso Patient lido
+					{ targetFhirPath: 'id', sourcePath: 'patient_identifier' }, // Coluna CSV 'patient_identifier'
+					{ targetFhirPath: 'name[0].text', sourcePath: 'full_name' }, // Pega texto do primeiro nome
+					{ targetFhirPath: 'birthDate', sourcePath: 'dob' },
+					{ targetFhirPath: 'gender', sourcePath: 'sex' },
+					{ targetFhirPath: 'address[0].city', sourcePath: 'city' }, // Pega cidade do primeiro endereço
+					{ targetFhirPath: 'active', sourcePath: 'is_active' },
+				],
+			},
+		},
+	});
+	console.log('Upserted mapping: PatientToCsvBasic');
+
+	// --- Mapeamento Observation -> JSON (FROM_FHIR) ---
+	// Valida os campos FHIR lidos contra Observation base
+	await prisma.mappingConfiguration.upsert({
+		where: { name: 'ObservationToJsonBasic' },
+		update: { structureDefinitionUrl: observationBaseUrl },
+		create: {
+			name: 'ObservationToJsonBasic',
+			description: 'Maps FHIR Observation resources to simple JSON objects',
+			sourceType: SourceType.JSON, // Target é JSON
+			fhirResourceType: 'Observation', // Source é Observation
+			direction: Direction.FROM_FHIR,
+			structureDefinitionUrl: observationBaseUrl, // Valida os paths FHIR lidos
+			fieldMappings: {
+				create: [
+					// targetFhirPath é relativo ao recurso Observation lido
+					{ targetFhirPath: 'id', sourcePath: 'obsId' }, // Gera campo obsId no JSON de saída
+					{ targetFhirPath: 'status', sourcePath: 'currentStatus' },
+					{
+						targetFhirPath: 'code.coding[0].code',
+						sourcePath: 'measurement.code',
+					},
+					{
+						targetFhirPath: 'code.coding[0].display',
+						sourcePath: 'measurement.name',
+					},
+					{ targetFhirPath: 'valueQuantity.value', sourcePath: 'result.value' },
+					{ targetFhirPath: 'valueQuantity.unit', sourcePath: 'result.units' },
+					{ targetFhirPath: 'effectiveDateTime', sourcePath: 'timestamp' },
+					{ targetFhirPath: 'subject.reference', sourcePath: 'patientRef' },
+				],
+			},
+		},
+	});
+	console.log('Upserted mapping: ObservationToJsonBasic');
 
 	console.log('Seeding finished.');
 }
@@ -95,5 +168,5 @@ main()
 		process.exit(1);
 	})
 	.finally(async () => {
-		await db.$disconnect();
+		await prisma.$disconnect();
 	});

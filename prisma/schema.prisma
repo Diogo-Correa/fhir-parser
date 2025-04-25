@@ -6,23 +6,24 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 model MappingConfiguration {
-  id               String         @id @default(cuid())
-  name             String         @unique
-  description      String?
-  sourceType       SourceType
-  fhirResourceType String
-  direction        Direction
-  fieldMappings    FieldMapping[]
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  id                     String         @id @default(cuid())
+  name                   String         @unique // Nome único para fácil referência
+  description            String?
+  sourceType             SourceType // Enum: JSON ou CSV (indica o formato de *destino* para FROM_FHIR)
+  fhirResourceType       String // Tipo do Recurso FHIR base (ex: Patient, Observation)
+  direction              Direction // Enum: TO_FHIR ou FROM_FHIR
+  structureDefinitionUrl String? // URL da StructureDefinition alvo para validação (opcional, fallback para fhirResourceType)
+  fieldMappings          FieldMapping[]
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
 
   @@index([name])
-  @@map("mapping_configurations")
+  @@index([structureDefinitionUrl]) // Índice para busca por URL da SD
 }
 
 model FieldMapping {
@@ -39,6 +40,50 @@ model FieldMapping {
 
   @@index([mappingConfigurationId])
   @@map("field_mappings")
+}
+
+model FhirStructureDefinition {
+  id          String   @id @default(cuid())
+  url         String   @unique // URL Canônica da StructureDefinition
+  version     String? // Versão da StructureDefinition
+  name        String? // Nome legível (ex: BRCorePatient)
+  type        String // Tipo do Recurso FHIR base (ex: Patient)
+  fhirVersion String? // Versão do FHIR (ex: 4.0.1)
+  description String? // Descrição da StructureDefinition
+  processedAt DateTime @default(now()) @updatedAt // Quando foi processada/atualizada
+
+  elements FhirElementDefinition[]
+
+  @@index([url])
+  @@index([type])
+}
+
+model FhirElementDefinition {
+  id                    String                  @id @default(cuid())
+  structureDefinitionId String
+  structureDefinition   FhirStructureDefinition @relation(fields: [structureDefinitionId], references: [id], onDelete: Cascade)
+
+  path             String // Caminho FHIR completo do elemento (ex: Patient.identifier:cns.system)
+  sliceName        String? // Nome do slice, se aplicável (ex: cns)
+  shortDescription String? // Descrição curta (element.short)
+  definition       String? // Definição detalhada (element.definition)
+  dataTypes        String[] // Tipos de dados permitidos (element.type[*].code)
+  cardinalityMin   Int? // Cardinalidade mínima (element.min)
+  cardinalityMax   String? // Cardinalidade máxima (element.max - pode ser "1", "*")
+
+  // Armazena o valor fixo/padrão e seu tipo
+  fixedValue     String? // Valor fixo (convertido para string)
+  fixedValueType String? // Tipo do valor fixo (ex: 'code', 'uri', 'boolean', 'string')
+
+  defaultValue     String? // Valor padrão (convertido para string)
+  defaultValueType String? // Tipo do valor padrão
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([structureDefinitionId, path]) // Garante path único dentro de uma SD
+  @@index([structureDefinitionId])
+  @@index([path])
 }
 
 enum SourceType {
