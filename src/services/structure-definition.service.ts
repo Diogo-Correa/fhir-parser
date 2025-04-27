@@ -1,6 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import axios from 'axios';
-import { db } from '../lib/prisma';
+import { fhirStructureDefinitionTransaction } from '../repositories/structure-definitions/transaction';
 import { FhirClientError } from './errors/FhirClientError';
 
 const DEFAULT_FHIR_SERVER_URL =
@@ -101,9 +101,12 @@ export async function processAndStoreStructureDefinition(
 			description: structureDefinition.description,
 		};
 
-		const elementsData: Prisma.FhirElementDefinitionCreateManyInput[] = [];
-		elements.forEach((element: any) => {
-			if (!element.path) return;
+		const elementsData: Omit<
+			Prisma.FhirElementDefinitionCreateManyInput,
+			'structureDefinitionId'
+		>[] = [];
+		for (const element of elements) {
+			if (!element.path) continue;
 			let fixedValue: string | null = null;
 			let fixedValueType: string | null = null;
 			let defaultValue: string | null = null;
@@ -144,31 +147,15 @@ export async function processAndStoreStructureDefinition(
 				defaultValue: defaultValue,
 				defaultValueType: defaultValueType?.toLowerCase(),
 			});
-		});
+		}
 
 		// Transação no DB
 		try {
-			const savedStructureDefinition = await db.$transaction(async (tx) => {
-				const upsertedSd = await tx.fhirStructureDefinition.upsert({
-					where: { url: sdData.url },
-					update: { ...sdData, processedAt: new Date() }, // Atualiza data de processamento
-					create: sdData,
-				});
-				await tx.fhirElementDefinition.deleteMany({
-					where: { structureDefinitionId: upsertedSd.id },
-				});
-				if (elementsData.length > 0) {
-					const elementsToCreate = elementsData.map((el) => ({
-						...el,
-						structureDefinitionId: upsertedSd.id,
-					}));
-					await tx.fhirElementDefinition.createMany({
-						data: elementsToCreate,
-						skipDuplicates: true, // Ignora duplicatas silenciosamente se @@unique falhar por algum motivo
-					});
-				}
-				return upsertedSd;
-			});
+			const savedStructureDefinition = await fhirStructureDefinitionTransaction(
+				sdData.url,
+				sdData,
+				elementsData,
+			);
 
 			console.log(
 				`StructureDefinition ${savedStructureDefinition.url} and ${elementsData.length} elements stored.`,
@@ -196,14 +183,14 @@ export async function processAndStoreStructureDefinition(
 			errorMessage = error.message; // Já formatado
 		} else if (axios.isAxiosError(error)) {
 			const status = error.response?.status;
-			errorMessage += ` Status: ${status}.`;
+			`${errorMessage} Status: ${status}.`;
 			if (status === 404) {
-				errorMessage += ' Resource not found.';
+				`${errorMessage} Resource not found.`;
 			} else {
-				errorMessage += ` Response: ${JSON.stringify(error.response?.data)}`;
+				`${errorMessage} Response: ${JSON.stringify(error.response?.data)}`;
 			}
 		} else {
-			errorMessage += ` Error: ${error.message}`;
+			`${errorMessage} Error: ${error.message}`;
 		}
 		console.error(errorMessage);
 		// Retorna falha, mas não lança erro para o controller necessariamente

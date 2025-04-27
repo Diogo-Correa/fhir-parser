@@ -1,13 +1,10 @@
-import type { FieldMapping, MappingConfiguration } from '@prisma/client';
-import { db } from '../lib/prisma';
 import { getMappingConfigurationByName } from '../repositories/mapping/getMappingConfiguration';
+import { findUniqueStructureDefinitionByUrlOrType } from '../repositories/structure-definitions/find-unique-sd';
+import type { FhirStructureDefinitionWithPaths } from '../types/StructureDefinition';
+import { isValidFhirPath } from '../utils/fhirPath';
 import { InvalidMappingError } from './errors/InvalidMappingError';
 import { MappingConfigurationNotFoundError } from './errors/MappingConfigurationNotFoundError';
 import { StructureDefinitionNotProcessedError } from './errors/StructureDefinitionNotProcessedError';
-
-type MappingConfigWithFields = MappingConfiguration & {
-	fieldMappings: FieldMapping[];
-};
 
 export async function getMappingByNameService(name: string) {
 	const mappingConfig = await getMappingConfigurationByName(name);
@@ -26,23 +23,12 @@ export async function getMappingByNameService(name: string) {
 	}
 
 	// 3. Busca os elementos da StructureDefinition correspondente
-	let targetStructureDefinition;
-	if (mappingConfig.structureDefinitionUrl) {
-		targetStructureDefinition = await db.fhirStructureDefinition.findUnique({
-			where: { url: mappingConfig.structureDefinitionUrl },
-			include: { elements: { select: { path: true } } }, // Apenas os paths
-		});
-	} else {
-		// Fallback: Busca pelo tipo base
-		targetStructureDefinition = await db.fhirStructureDefinition.findFirst({
-			where: { type: mappingConfig.fhirResourceType },
-			include: { elements: { select: { path: true } } },
-			orderBy: {
-				// Desambiguação simples se houver múltiplas versões processadas
-				processedAt: 'desc', // Pega a mais recente processada
-			},
-		});
-	}
+	let targetStructureDefinition: FhirStructureDefinitionWithPaths | null = null;
+	if (mappingConfig.structureDefinitionUrl || mappingConfig.fhirResourceType)
+		targetStructureDefinition = await findUniqueStructureDefinitionByUrlOrType(
+			mappingConfig.structureDefinitionUrl ?? null,
+			mappingConfig.fhirResourceType ?? null,
+		);
 
 	if (
 		!targetStructureDefinition ||
