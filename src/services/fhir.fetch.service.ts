@@ -1,18 +1,11 @@
-// src/services/fhir.fetch.service.ts
 import axios from 'axios';
 import { Readable } from 'node:stream';
+import type { FhirResourceStreamOptions } from '../types/FhirResource';
 import { FhirClientError } from './errors/FhirClientError';
 
 const DEFAULT_FHIR_SERVER_URL =
 	process.env.FHIR_SERVER_BASE_URL || 'http://localhost:8080/fhir';
-const DEFAULT_PAGE_SIZE = 50; // Ajustar conforme necessidade/capacidade do servidor
-
-interface FhirResourceStreamOptions {
-	initialUrl: string;
-	fhirServerUrl?: string;
-	pageSize?: number;
-	// TODO: Adicionar opções de autenticação se necessário
-}
+const DEFAULT_PAGE_SIZE = 50;
 
 export class FhirResourceStream extends Readable {
 	private fhirBaseUrl: string;
@@ -20,7 +13,7 @@ export class FhirResourceStream extends Readable {
 	private fetching: boolean;
 	private pageSize: number;
 	private resourceQueue: any[];
-	private totalFetched = 0; // Contador para debug
+	private totalFetched = 0;
 
 	constructor(options: FhirResourceStreamOptions) {
 		super({
@@ -128,18 +121,20 @@ export class FhirResourceStream extends Readable {
 					Accept: 'application/fhir+json',
 					// TODO: Adicionar headers de autenticação
 				},
-				timeout: 60000, // Aumenta timeout para busca
+				timeout: 60000,
 			});
 
 			const bundle = response.data;
 
 			if (bundle?.resourceType === 'Bundle' && Array.isArray(bundle.entry)) {
-				bundle.entry.forEach(
-					(entry: any) =>
-						entry.resource && this.resourceQueue.push(entry.resource),
-				);
+				for (const entry of bundle.entry) {
+					if (entry.resource) {
+						this.resourceQueue.push(entry.resource);
+					}
+				}
 				const nextLink = bundle.link?.find(
-					(link: any) => link.relation === 'next',
+					(link: { relation: string; url?: string }) =>
+						link.relation === 'next',
 				);
 				if (nextLink?.url) {
 					this.nextPageUrl = nextLink.url;

@@ -4,7 +4,7 @@ import {
 	type MappingConfiguration,
 	SourceType,
 } from '@prisma/client';
-import { Readable, Transform } from 'node:stream';
+import { type Readable, Transform } from 'node:stream';
 import { sendResourceToFhirServer } from '../lib/fhir.client';
 import { getMappingConfigurationByName } from '../repositories/mapping/getMappingConfiguration';
 import { getValue } from '../utils/getValueByPath';
@@ -129,13 +129,14 @@ export async function streamTransformData({
 	}
 
 	// 3. Montar a Cadeia de Streams (Pipeline)
+	// biome-ignore lint/style/useConst: <explanation>
 	let finalOutputStream: Readable;
 	const pipelineStreams: Readable[] = [initialStream];
 	if (parserStream) pipelineStreams.push(parserStream);
 	pipelineStreams.push(transformStream);
 	pipelineStreams.push(outputStream);
 
-	// @ts-ignore // pipeline pode lidar com array de streams
+	// pipeline pode lidar com array de streams
 	finalOutputStream = pipelineStreams.reduce((prev, current) =>
 		prev.pipe(current as Transform),
 	);
@@ -167,7 +168,7 @@ function createFhirTransformStream(
 		objectMode: true,
 		writableHighWaterMark: 16, // Ajustar buffer se necessário
 		readableHighWaterMark: 16,
-		async transform(chunk, encoding, callback) {
+		async transform(chunk, _, callback) {
 			try {
 				let resultItem: any = null;
 				if (config.direction === Direction.TO_FHIR) {
@@ -243,7 +244,7 @@ function transformSingleItemToFhir(
 		setValue(fhirResource, 'meta.profile[0]', config.structureDefinitionUrl);
 	}
 
-	config.fieldMappings.forEach((mapping) => {
+	for (const mapping of config.fieldMappings) {
 		const sourceValue = getValue(item, mapping.sourcePath);
 
 		// Obtém o targetFhirPath CORRIGIDO (sem prefixo de tipo)
@@ -253,7 +254,7 @@ function transformSingleItemToFhir(
 			// Define o valor usando o path relativo
 			setValue(fhirResource, targetPath, sourceValue);
 		}
-	});
+	}
 	return fhirResource;
 }
 
@@ -270,7 +271,7 @@ function transformSingleItemFromFhir(
 		return null; // Retorna nulo para ser filtrado no stream
 	}
 
-	config.fieldMappings.forEach((mapping) => {
+	for (const mapping of config.fieldMappings) {
 		const fhirPath = mapping.targetFhirPath; // Path dentro do recurso FHIR
 		const targetPath = mapping.sourcePath; // Path no JSON/CSV de saída
 
@@ -288,6 +289,6 @@ function transformSingleItemFromFhir(
 				}
 			}
 		}
-	});
+	}
 	return outputItem;
 }

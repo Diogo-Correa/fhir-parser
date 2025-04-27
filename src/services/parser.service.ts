@@ -2,7 +2,7 @@ import { Transform } from 'node:stream';
 import Papa from 'papaparse';
 import { parser } from 'stream-json';
 import { streamValues } from 'stream-json/streamers/StreamValues';
-import { InvalidInputDataError } from './transform.service';
+import { InvalidInputDataError } from './errors/InvalidInputDataError';
 
 export function createCsvParserStream(): Transform {
 	return Papa.parse(Papa.NODE_STREAM_INPUT, {
@@ -19,7 +19,7 @@ export function createJsonParserStream(): Transform {
 
 	const objectExtractor = new Transform({
 		objectMode: true,
-		transform({ key, value }, encoding, callback) {
+		transform({ key, value }, _, callback) {
 			this.push(value);
 			callback();
 		},
