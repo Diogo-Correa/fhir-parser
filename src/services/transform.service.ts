@@ -7,6 +7,10 @@ import {
 import { type Readable, Transform } from 'node:stream';
 import { sendResourceToFhirServer } from '../lib/fhir.client';
 import { getMappingConfigurationByName } from '../repositories/mapping/getMappingConfiguration';
+import type {
+	StreamTransformResult,
+	StreamTransformServiceParams,
+} from '../types/StreamTransform';
 import { getValue } from '../utils/getValueByPath';
 import { setValue } from '../utils/setValueByPath';
 import { FhirClientError } from './errors/FhirClientError';
@@ -18,20 +22,6 @@ import {
 	createJsonParserStream,
 	createNdjsonStringifyStream,
 } from './parser.service';
-
-interface StreamTransformServiceParams {
-	mappingConfigName: string;
-	inputStream?: Readable; // Para TO_FHIR
-	sourceContentType?: string; // Para TO_FHIR
-	fhirQueryPath?: string; // Para FROM_FHIR
-	sendToFhir?: boolean; // Apenas TO_FHIR
-	fhirServerUrlOverride?: string;
-}
-
-interface StreamTransformResult {
-	outputStream: Readable;
-	outputContentType: string;
-}
 
 export async function streamTransformData({
 	mappingConfigName,
