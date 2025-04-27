@@ -1,10 +1,10 @@
-import { Transform } from 'node:stream';
+import { type Duplex, Transform } from 'node:stream';
 import Papa from 'papaparse';
 import { parser } from 'stream-json';
 import { streamValues } from 'stream-json/streamers/StreamValues';
 import { InvalidInputDataError } from './errors/InvalidInputDataError';
 
-export function createCsvParserStream(): Transform {
+export function createCsvParserStream(): Duplex {
 	return Papa.parse(Papa.NODE_STREAM_INPUT, {
 		header: true,
 		skipEmptyLines: true,
