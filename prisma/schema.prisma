@@ -30,8 +30,10 @@ model FieldMapping {
   id                     String               @id @default(cuid())
   sourcePath             String
   targetFhirPath         String
-  transformationType     String?
+  transformationType     TransformationType?
   transformationDetails  Json?
+  validationType         ValidationType?
+  validationDetails      Json?
   defaultValue           String?
   mappingConfigurationId String
   mappingConfiguration   MappingConfiguration @relation(fields: [mappingConfigurationId], references: [id], onDelete: Cascade)
@@ -94,4 +96,46 @@ enum SourceType {
 enum Direction {
   TO_FHIR
   FROM_FHIR
+}
+
+enum ValidationType {
+  REGEX
+  RANGE
+  REQUIRED
+  OPTIONAL
+  FIXED
+  DEFAULT
+  CUSTOM
+  MIN_LENGTH
+  MAX_LENGTH
+  PATTERN
+  ENUM
+  DATE
+  TIME
+  DATETIME
+  BOOLEAN
+  INTEGER
+  FLOAT
+  STRING
+  URI
+  CODE
+  DECIMAL
+  VALUESET
+}
+
+enum TransformationType {
+  MAP
+  FILTER
+  REDUCE
+  FLATTEN
+  SPLIT
+  JOIN
+  MERGE
+  CONCATENATE
+  TRIM
+  LOWERCASE
+  UPPERCASE
+  FORMAT_DATE
+  PARSE_DATE
+  CODE_LOOKUP
 }

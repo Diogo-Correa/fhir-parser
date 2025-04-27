@@ -10,7 +10,8 @@ async function main() {
 		'https://br-core.saude.gov.br/fhir/StructureDefinition/br-core-patient';
 	const observationBaseUrl =
 		'http://hl7.org/fhir/StructureDefinition/Observation';
-	const patientBaseUrl = 'http://hl7.org/fhir/StructureDefinition/Patient'; // URL da SD base do Patient
+	const administrativeGenderVs =
+		'http://hl7.org/fhir/ValueSet/administrative-gender';
 
 	// --- Mapeamento CSV -> Patient (TO_FHIR) ---
 	// Validado contra br-core-patient OU Patient base se br-core não processado
@@ -26,19 +27,63 @@ async function main() {
 			structureDefinitionUrl: brCorePatientUrl, // Especifica contra qual SD validar
 			fieldMappings: {
 				create: [
-					// Paths relativos à raiz do Patient
-					{ sourcePath: 'id_paciente', targetFhirPath: 'id' },
-					{ sourcePath: 'nome_completo', targetFhirPath: 'name[0].text' }, // Mapeia para o primeiro nome, campo text
+					// ID: Obrigatório e talvez um formato específico
 					{
-						sourcePath: 'nome_oficial',
-						targetFhirPath: "name[?use='official'].text",
-					}, // Exemplo: Mapeando para nome oficial
-					{ sourcePath: 'data_nascimento', targetFhirPath: 'birthDate' },
-					{ sourcePath: 'genero', targetFhirPath: 'gender' },
-					{ sourcePath: 'cpf', targetFhirPath: 'identifier[0].value' }, // Mapeamento simples para valor do primeiro identificador
-					{ sourcePath: 'cpf_system', targetFhirPath: 'identifier[0].system' }, // Ex: 'urn:oid:2.16.840.1.113883.13.236' (oid do CPF)
-					{ sourcePath: 'cpf_use', targetFhirPath: 'identifier[0].use' }, // Ex: 'official'
-					{ sourcePath: 'ativo', targetFhirPath: 'active' }, // Ex: true/false no CSV
+						sourcePath: 'id_paciente',
+						targetFhirPath: 'id',
+						validationType: 'REQUIRED', // Garante que não seja vazio/nulo
+					},
+					// Nome: Obrigatório, mínimo de 3 caracteres
+					{
+						sourcePath: 'nome_completo',
+						targetFhirPath: 'name[0].text',
+						validationType: 'MIN_LENGTH',
+						validationDetails: { min: 3 },
+						// Poderia adicionar REQUIRED também: validationType: 'COMPOUND', details: [{type: 'REQUIRED'}, {type: 'MIN_LENGTH', details: {min: 3}}] -> requer lógica mais complexa
+					},
+					// Data Nascimento: Obrigatório, formato específico e transformação
+					{
+						sourcePath: 'data_nascimento',
+						targetFhirPath: 'birthDate',
+						validationType: 'REGEX',
+						validationDetails: {
+							pattern: '^\\d{2}/\\d{2}/\\d{4}$',
+							message: 'Formato esperado DD/MM/YYYY',
+						}, // Valida formato de entrada
+						transformationType: 'FORMAT_DATE',
+						transformationDetails: {
+							inputFormat: 'dd/MM/yyyy',
+							outputFormat: 'yyyy-MM-dd',
+						},
+						// Adicionar REQUIRED se necessário
+					},
+					// Gênero: Mapeamento de código e validação contra ValueSet
+					{
+						sourcePath: 'genero_csv',
+						targetFhirPath: 'gender', // Ex: M, F, I no CSV
+						transformationType: 'CODE_LOOKUP',
+						transformationDetails: {
+							map: { M: 'male', F: 'female', I: 'other' },
+							defaultValue: 'unknown',
+						},
+						validationType: 'VALUESET', // Valida o valor *transformado* (male, female, other, unknown)
+						validationDetails: {
+							valueSetUrl: administrativeGenderVs,
+							strength: 'required',
+						}, // Valida contra o ValueSet padrão FHIR
+					},
+					// CPF: Obrigatório e valida formato (regex simples, pode melhorar)
+					{
+						sourcePath: 'cpf',
+						targetFhirPath:
+							"identifier[?system='urn:oid:2.16.840.1.113883.13.236'].value", // Mapeando especificamente para o identificador CPF
+						validationType: 'REGEX',
+						validationDetails: {
+							pattern: '^\\d{11}$',
+							message: 'CPF deve ter 11 dígitos',
+						},
+						// Adicionar REQUIRED
+					},
 				],
 			},
 		},
@@ -112,12 +157,56 @@ async function main() {
 			fieldMappings: {
 				create: [
 					// targetFhirPath é relativo ao recurso Patient lido
-					{ targetFhirPath: 'id', sourcePath: 'patient_identifier' }, // Coluna CSV 'patient_identifier'
-					{ targetFhirPath: 'name[0].text', sourcePath: 'full_name' }, // Pega texto do primeiro nome
-					{ targetFhirPath: 'birthDate', sourcePath: 'dob' },
-					{ targetFhirPath: 'gender', sourcePath: 'sex' },
-					{ targetFhirPath: 'address[0].city', sourcePath: 'city' }, // Pega cidade do primeiro endereço
-					{ targetFhirPath: 'active', sourcePath: 'is_active' },
+					{
+						targetFhirPath: 'id',
+						sourcePath: 'patient_identifier',
+						validationType: 'REQUIRED',
+					},
+					{
+						targetFhirPath: 'name[0].text',
+						sourcePath: 'full_name',
+						validationType: 'MIN_LENGTH',
+						validationDetails: { min: 3 },
+					},
+					{
+						targetFhirPath: 'birthDate',
+						sourcePath: 'dob',
+						validationType: 'REGEX',
+						validationDetails: {
+							pattern: '^\\d{2}/\\d{2}/\\d{4}$',
+							message: 'Formato esperado DD/MM/YYYY',
+						},
+						transformationType: 'FORMAT_DATE',
+						transformationDetails: {
+							inputFormat: 'dd/MM/yyyy',
+							outputFormat: 'yyyy-MM-dd',
+						},
+					},
+					{
+						targetFhirPath: 'gender',
+						sourcePath: 'sex',
+						transformationType: 'CODE_LOOKUP',
+						transformationDetails: {
+							map: { M: 'male', F: 'female', I: 'other' },
+							defaultValue: 'unknown',
+						},
+						validationType: 'VALUESET', // Valida o valor *transformado* (male, female, other, unknown)
+						validationDetails: {
+							valueSetUrl: administrativeGenderVs,
+							strength: 'required',
+						}, // Valida contra o ValueSet padrão FHIR
+					},
+					{
+						sourcePath: 'cpf',
+						targetFhirPath:
+							"identifier[?system='urn:oid:2.16.840.1.113883.13.236'].value", // Mapeando especificamente para o identificador CPF
+						validationType: 'REGEX',
+						validationDetails: {
+							pattern: '^\\d{11}$',
+							message: 'CPF deve ter 11 dígitos',
+						},
+						// Adicionar REQUIRED
+					},
 				],
 			},
 		},

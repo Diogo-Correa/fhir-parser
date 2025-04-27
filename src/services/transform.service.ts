@@ -4,15 +4,19 @@ import {
 	type MappingConfiguration,
 	SourceType,
 } from '@prisma/client';
-import { type Readable, Transform } from 'node:stream';
+import { type Duplex, type Readable, Transform } from 'node:stream';
 import { sendResourceToFhirServer } from '../lib/fhir.client';
 import { getMappingConfigurationByName } from '../repositories/mapping/getMappingConfiguration';
+import type { FieldProcessingError } from '../types/FieldProcessing';
 import type {
+	StreamItemError,
 	StreamTransformResult,
 	StreamTransformServiceParams,
 } from '../types/StreamTransform';
+import { applyTransformation } from '../utils/applyTransformation';
 import { getValue } from '../utils/getValueByPath';
 import { setValue } from '../utils/setValueByPath';
+import { validateValue } from '../utils/validateValue';
 import { FhirClientError } from './errors/FhirClientError';
 import { InvalidInputDataError } from './errors/InvalidInputDataError';
 import { createFhirResourceStream } from './fhir.fetch.service';
@@ -37,7 +41,7 @@ export async function streamTransformData({
 
 	// --- Variáveis do Pipeline ---
 	let initialStream: Readable;
-	let parserStream: Transform | null = null;
+	let parserStream: Duplex | null = null;
 	let transformStream: Transform;
 	let outputStream: Transform;
 	let outputContentType: string;
@@ -156,14 +160,107 @@ function createFhirTransformStream(
 ): Transform {
 	return new Transform({
 		objectMode: true,
-		writableHighWaterMark: 16, // Ajustar buffer se necessário
+		writableHighWaterMark: 16,
 		readableHighWaterMark: 16,
-		async transform(chunk, _, callback) {
+		async transform(chunk, encoding, callback) {
+			const itemErrors: FieldProcessingError[] = []; // Coleta erros para este chunk
+			let resultItem: any = null; // Armazena o item transformado (ou null se erro total)
+
 			try {
-				let resultItem: any = null;
 				if (config.direction === Direction.TO_FHIR) {
-					resultItem = transformSingleItemToFhir(chunk, config);
-					if (resultItem && sendToFhir) {
+					// --- TO_FHIR ---
+					const sourceItem = chunk;
+					const fhirResource: any = { resourceType: config.fhirResourceType };
+					if (config.structureDefinitionUrl) {
+						setValue(
+							fhirResource,
+							'meta.profile[0]',
+							config.structureDefinitionUrl,
+						);
+					}
+
+					for (const mapping of config.fieldMappings) {
+						const sourceValue = getValue(sourceItem, mapping.sourcePath);
+						let valueToSet = sourceValue; // Valor inicial
+						let transformationApplied = false;
+
+						// 1. Validação (só valida se sourceValue não for nulo, exceto para REQUIRED)
+						if (
+							mapping.validationType &&
+							(mapping.validationType.toUpperCase() === 'REQUIRED' ||
+								(sourceValue !== null && sourceValue !== undefined))
+						) {
+							const validationError = validateValue(
+								sourceValue,
+								mapping.validationType,
+								mapping.validationDetails,
+							);
+							if (validationError) {
+								itemErrors.push({
+									fieldSourcePath: mapping.sourcePath,
+									fieldTargetPath: mapping.targetFhirPath,
+									inputValue: sourceValue,
+									errorType: 'Validation',
+									message: validationError,
+									details: {
+										type: mapping.validationType,
+										details: mapping.validationDetails,
+									},
+								});
+								// Decide se continua: talvez não setar o valor se a validação falhar? Ou parar tudo?
+								// Por enquanto, apenas registra o erro e continua para transformação (se houver)
+								// Poderia adicionar uma flag 'stopOnError' na validação
+							}
+						}
+
+						// 2. Transformação (se houver) - só executa se não houver erro de validação *grave*? (Não implementado)
+						if (mapping.transformationType) {
+							const transformResult = applyTransformation(
+								sourceValue,
+								mapping.transformationType,
+								mapping.transformationDetails,
+								sourceItem,
+							);
+							if (transformResult.success) {
+								valueToSet = transformResult.value; // Usa valor transformado
+								transformationApplied = true;
+							} else {
+								itemErrors.push({
+									fieldSourcePath: mapping.sourcePath,
+									fieldTargetPath: mapping.targetFhirPath,
+									inputValue: sourceValue,
+									errorType: 'Transformation',
+									// biome-ignore lint/style/noNonNullAssertion: <explanation>
+									message: transformResult.message!,
+									details: {
+										type: mapping.transformationType,
+										details: mapping.transformationDetails,
+									},
+								});
+								// Se a transformação falhou, provavelmente não setamos o valor? Ou setamos o original?
+								// Por enquanto, vamos setar o valor original se a transformação falhar.
+								valueToSet = sourceValue;
+							}
+						}
+
+						// 3. Define o valor (final) no recurso FHIR
+						const targetPath = mapping.targetFhirPath;
+						// Só define se o valor final não for undefined/null (ou se for resultado de DEFAULT_VALUE)
+						if (
+							(valueToSet !== undefined && valueToSet !== null && targetPath) ||
+							(transformationApplied &&
+								mapping.transformationType?.toUpperCase() === 'DEFAULT_VALUE')
+						) {
+							// Não setar se houve erro de validação? (Decisão de projeto) - Por enquanto, seta mesmo com erro de validação.
+							setValue(fhirResource, targetPath, valueToSet);
+						}
+					} // Fim do loop de fieldMappings
+
+					resultItem = fhirResource; // O recurso FHIR montado
+
+					// Envio Assíncrono (como antes)
+					if (itemErrors.length === 0 && resultItem && sendToFhir) {
+						// Só envia se não houver erros no item
 						// Envio assíncrono, não espera, apenas dispara
 						sendResourceToFhirServer({
 							resource: resultItem,
@@ -198,22 +295,145 @@ function createFhirTransformStream(
 							});
 					}
 				} else if (config.direction === Direction.FROM_FHIR) {
-					resultItem = transformSingleItemFromFhir(chunk, config);
-				}
+					// --- FROM_FHIR ---
+					const fhirResource = chunk;
+					const outputItem: any = {};
 
-				if (resultItem !== null) {
-					// Só envia para o próximo estágio se não for nulo
+					if (
+						!fhirResource ||
+						fhirResource?.resourceType !== config.fhirResourceType
+					) {
+						itemErrors.push({
+							fieldTargetPath: 'N/A',
+							inputValue: fhirResource,
+							errorType: 'Validation',
+							message: `Expected '${config.fhirResourceType}', got '${fhirResource?.resourceType}'. Skipping.`,
+						});
+						resultItem = null; // Não processa
+					} else {
+						for (const mapping of config.fieldMappings) {
+							const fhirPath = mapping.targetFhirPath;
+							const targetPath = mapping.sourcePath; // Path no JSON/CSV de saída
+							let valueToSet: any = null; // Valor final para o outputItem
+
+							if (fhirPath && targetPath) {
+								const sourceValue = getValue(fhirResource, fhirPath);
+
+								// 1. Validação (Aplicada ao valor FHIR? Menos comum, mas possível)
+								if (
+									mapping.validationType &&
+									(mapping.validationType.toUpperCase() === 'REQUIRED' ||
+										(sourceValue !== null && sourceValue !== undefined))
+								) {
+									const validationError = validateValue(
+										sourceValue,
+										mapping.validationType,
+										mapping.validationDetails,
+									);
+									if (validationError) {
+										itemErrors.push({
+											fieldSourcePath: fhirPath,
+											fieldTargetPath: targetPath,
+											inputValue: sourceValue,
+											errorType: 'Validation',
+											message: validationError,
+											details: {
+												type: mapping.validationType,
+												details: mapping.validationDetails,
+											},
+										});
+									}
+								}
+
+								// 2. Transformação (Aplicada ao valor FHIR)
+								let transformationApplied = false;
+								if (mapping.transformationType) {
+									const transformResult = applyTransformation(
+										sourceValue,
+										mapping.transformationType,
+										mapping.transformationDetails,
+										fhirResource,
+									);
+									if (transformResult.success) {
+										valueToSet = transformResult.value;
+										transformationApplied = true;
+									} else {
+										itemErrors.push({
+											fieldSourcePath: fhirPath,
+											fieldTargetPath: targetPath,
+											inputValue: sourceValue,
+											errorType: 'Transformation',
+											// biome-ignore lint/style/noNonNullAssertion: <explanation>
+											message: transformResult.message!,
+											details: {
+												type: mapping.transformationType,
+												details: mapping.transformationDetails,
+											},
+										});
+										valueToSet = sourceValue; // Usa original se transformação falhar
+									}
+								} else {
+									valueToSet = sourceValue; // Usa original se não houver transformação
+								}
+
+								// 3. Define o valor no item de saída
+								if (
+									(valueToSet !== undefined && valueToSet !== null) ||
+									(transformationApplied &&
+										mapping.transformationType?.toUpperCase() ===
+											'DEFAULT_VALUE')
+								) {
+									if (config.sourceType === SourceType.CSV) {
+										const columnName = targetPath.split('.')[0] || targetPath;
+										outputItem[columnName] = valueToSet;
+									} else {
+										setValue(outputItem, targetPath, valueToSet);
+									}
+								}
+							} // Fim if(fhirPath && targetPath)
+						} // Fim loop fieldMappings
+						resultItem = outputItem;
+					} // Fim else (recurso válido)
+				} // Fim if/else direction
+
+				// --- Emissão para o Próximo Estágio ---
+				if (itemErrors.length > 0) {
+					// Emite um objeto de erro
+					this.push({
+						_isTransformError: true,
+						errors: itemErrors,
+						originalItem: chunk, // Envia o item original que causou o erro
+					} as StreamItemError);
+				} else if (resultItem !== null) {
+					// Emite o item transformado com sucesso
 					this.push(resultItem);
 				}
-				callback(); // Processamento deste chunk ok
+				// else: Se resultItem for nulo e não houver erros (ex: FROM_FHIR com tipo errado), não emite nada
+
+				callback(); // Sinaliza que este chunk foi processado (com ou sem emissão)
 			} catch (error: any) {
+				// Erro inesperado DENTRO da lógica de transformação do item
 				console.error(
-					'TRANSFORM STREAM ERROR:',
+					'UNEXPECTED TRANSFORM STREAM ERROR:',
 					error,
-					'Failed Item (limited view):',
+					'Item:',
 					JSON.stringify(chunk).substring(0, 200),
 				);
-				callback(error); // Propaga o erro, vai parar o pipeline
+				// Emite um objeto de erro genérico para este item
+				this.push({
+					_isTransformError: true,
+					errors: [
+						{
+							fieldTargetPath: 'N/A',
+							inputValue: chunk,
+							errorType: 'Transformation',
+							message: `Unexpected error processing item: ${error.message}`,
+						},
+					],
+					originalItem: chunk,
+				} as StreamItemError);
+				callback(); // Continua o stream, mas reporta o erro do item
+				// Alternativa: callback(error) -> Pararia todo o pipeline
 			}
 		},
 	});

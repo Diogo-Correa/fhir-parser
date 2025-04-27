@@ -1,4 +1,5 @@
 import type { Readable } from 'node:stream';
+import type { FieldProcessingError } from './FieldProcessing';
 
 export interface StreamTransformServiceParams {
 	mappingConfigName: string;
@@ -12,4 +13,10 @@ export interface StreamTransformServiceParams {
 export interface StreamTransformResult {
 	outputStream: Readable;
 	outputContentType: string;
+}
+
+export interface StreamItemError {
+	_isTransformError: true; // Flag para identificar erros
+	errors: FieldProcessingError[];
+	originalItem: any; // O chunk original que falhou
 }
