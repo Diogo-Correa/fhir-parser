@@ -39,7 +39,6 @@ async function main() {
 						targetFhirPath: 'name[0].text',
 						validationType: 'MIN_LENGTH',
 						validationDetails: { min: 3 },
-						// Poderia adicionar REQUIRED também: validationType: 'COMPOUND', details: [{type: 'REQUIRED'}, {type: 'MIN_LENGTH', details: {min: 3}}] -> requer lógica mais complexa
 					},
 					// Data Nascimento: Obrigatório, formato específico e transformação
 					{

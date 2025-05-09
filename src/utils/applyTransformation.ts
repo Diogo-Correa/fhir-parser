@@ -43,7 +43,7 @@ export function applyTransformation(
 				if (!details?.inputFormat || !details.outputFormat)
 					return { success: false, message: 'Invalid details for DATE_FORMAT' };
 				if (typeof sourceValue !== 'string' || !sourceValue)
-					return { success: true, value: sourceValue }; // Não transforma não-string
+					return { success: true, value: sourceValue };
 				const parsedDate = parseDate(
 					sourceValue,
 					details.inputFormat,
@@ -55,7 +55,7 @@ export function applyTransformation(
 						message: `Failed to parse date '${sourceValue}' with format '${details.inputFormat}'`,
 					};
 				transformedValue = formatDate(parsedDate, details.outputFormat);
-				break; // Sai do switch
+				break;
 			}
 
 			case 'STRING_CASE': {
@@ -112,7 +112,7 @@ export function applyTransformation(
 				break;
 			}
 
-			// Adicionar outros cases...
+			// TODO: Adicionar outros cases...
 
 			default:
 				return {

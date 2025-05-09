@@ -20,7 +20,7 @@ export async function handleTransformRequest(
 	reply: FastifyReply,
 ) {
 	const contentType = request.headers['content-type'] || '';
-	const queryParams = request.query || {};
+	const queryParams: Partial<TransformApiParams> = request.query || {};
 	// Só parseia body se for JSON (Fastify pode já ter feito)
 	const bodyParams =
 		contentType.includes('json') &&
@@ -35,7 +35,7 @@ export async function handleTransformRequest(
 			queryParams.mappingConfigName || bodyParams.mappingConfigName,
 		sendToFhirServer:
 			typeof queryParams.sendToFhirServer === 'string'
-				? queryParams.sendToFhirServer.toLowerCase() === 'true'
+				? String(queryParams.sendToFhirServer).toLowerCase() === 'true'
 				: (bodyParams.sendToFhirServer ?? false),
 		fhirServerUrlOverride:
 			queryParams.fhirServerUrlOverride || bodyParams.fhirServerUrlOverride,
@@ -66,7 +66,7 @@ export async function handleTransformRequest(
 			contentType.includes('ndjson');
 
 		const { outputStream, outputContentType } = await streamTransformData({
-			mappingConfigName: params.mappingConfigName!, // Zod garante que existe
+			mappingConfigName: params.mappingConfigName ?? '',
 			inputStream: isSupportedInputStream ? request.raw : undefined,
 			sourceContentType: isSupportedInputStream ? contentType : undefined,
 			fhirQueryPath: params.fhirQueryPath,

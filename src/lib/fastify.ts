@@ -13,7 +13,7 @@ export function buildServer(): FastifyInstance {
 		done(null);
 	});
 	for (const schema of schemas) app.addSchema(schema);
-	app.register(appRoutes, { prefix: '/api' });
+	app.register(appRoutes, { prefix: '/api/v1' });
 
 	return app;
 }

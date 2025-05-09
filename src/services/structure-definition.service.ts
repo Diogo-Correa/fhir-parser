@@ -26,7 +26,7 @@ export async function processAndStoreStructureDefinition(
 		// Tenta buscar por ID ou URL canônica
 		if (identifier.includes('/')) {
 			// Heurística: Se tem /, provavelmente é URL ou tipo/id
-			if (identifier.startsWith('http')) {
+			if (identifier.startsWith('https')) {
 				// URL Canônica
 				fetchUrl = `${serverUrl}/StructureDefinition?url=${encodeURIComponent(identifier)}`;
 			} else {
