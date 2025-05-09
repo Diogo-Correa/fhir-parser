@@ -1,3 +1,3 @@
 id_paciente,nome_completo,data_nascimento,genero
-PAT001,João da Silva,1985-04-15,male
-PAT002,Maria Oliveira,27/04/2025,female
+1,João da Silva,1985-04-15,male
+2,Maria Oliveira,27/04/2025,female

@@ -1,7 +1,11 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import type { ProcessStructureDefinitionBody } from '../schemas/structure-definition.schema';
+import type {
+	GetUniqueStructureDefinitionParams,
+	ProcessStructureDefinitionBody,
+} from '../schemas/structure-definition.schema';
 import {
 	getAllStructureDefinitions,
+	getStructureDefinitionByUrlOrType,
 	processAndStoreStructureDefinition,
 } from '../services/structure-definition.service';
 
@@ -21,6 +25,31 @@ export async function handleGetStructureDefinition(
 			error,
 			'Unexpected error retrieving StructureDefinitions',
 		);
+		reply.status(500).send({
+			message:
+				error instanceof Error
+					? error.message
+					: 'An unexpected error occurred.',
+			success: false,
+		});
+	}
+}
+
+export async function handleGetUniqueStructureDefinition(
+	request: FastifyRequest<{ Body: GetUniqueStructureDefinitionParams }>,
+	reply: FastifyReply,
+) {
+	const { url, type } = request.body;
+
+	try {
+		const data = await getStructureDefinitionByUrlOrType(url, type);
+		reply.code(200).send({
+			message: 'StructureDefinition retrieved successfully',
+			success: true,
+			data: data ?? [],
+		});
+	} catch (error) {
+		request.log.error(error, 'Unexpected error retrieving StructureDefinition');
 		reply.status(500).send({
 			message:
 				error instanceof Error

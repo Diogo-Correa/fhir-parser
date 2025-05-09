@@ -13,13 +13,26 @@ export const processStructureDefinitionSchema = z.object({
 		.optional(),
 });
 
+export const getUniqueStructureDefinitionSchema = z
+	.object({
+		url: z.string().url().optional(),
+		type: z.string().optional(),
+	})
+	.refine((data) => data.url || data.type, {
+		message: 'Either url or type must be provided',
+	});
+
 export type ProcessStructureDefinitionBody = z.infer<
 	typeof processStructureDefinitionSchema
+>;
+export type GetUniqueStructureDefinitionParams = z.infer<
+	typeof getUniqueStructureDefinitionSchema
 >;
 
 export const { schemas: structureDefinitionSchemas, $ref } = buildJsonSchemas(
 	{
 		processStructureDefinitionSchema,
+		getUniqueStructureDefinitionSchema,
 	},
 	{ $id: 'structureDefinitionSchemas' },
 );
