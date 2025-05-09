@@ -1,6 +1,35 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { ProcessStructureDefinitionBody } from '../schemas/structure-definition.schema';
-import { processAndStoreStructureDefinition } from '../services/structure-definition.service';
+import {
+	getAllStructureDefinitions,
+	processAndStoreStructureDefinition,
+} from '../services/structure-definition.service';
+
+export async function handleGetStructureDefinition(
+	request: FastifyRequest,
+	reply: FastifyReply,
+) {
+	try {
+		const data = await getAllStructureDefinitions();
+		reply.code(200).send({
+			message: 'StructureDefinitions retrieved successfully',
+			success: true,
+			data,
+		});
+	} catch (error) {
+		request.log.error(
+			error,
+			'Unexpected error retrieving StructureDefinitions',
+		);
+		reply.status(500).send({
+			message:
+				error instanceof Error
+					? error.message
+					: 'An unexpected error occurred.',
+			success: false,
+		});
+	}
+}
 
 export async function handleProcessStructureDefinition(
 	request: FastifyRequest<{ Body: ProcessStructureDefinitionBody }>,

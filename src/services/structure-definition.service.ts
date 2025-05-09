@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import axios from 'axios';
+import { findManyStructureDefinitions } from '../repositories/structure-definitions/find-many';
 import { fhirStructureDefinitionTransaction } from '../repositories/structure-definitions/transaction';
 import { FhirClientError } from './errors/FhirClientError';
 
@@ -12,6 +13,11 @@ interface ProcessResult {
 	structureDefinitionId?: string;
 	elementCount?: number;
 	structureDefinitionUrl?: string;
+}
+
+export async function getAllStructureDefinitions() {
+	const structureDefinitions = await findManyStructureDefinitions();
+	return structureDefinitions;
 }
 
 export async function processAndStoreStructureDefinition(

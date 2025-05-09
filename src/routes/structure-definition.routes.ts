@@ -1,8 +1,23 @@
 import type { FastifyInstance } from 'fastify';
-import { handleProcessStructureDefinition } from '../controllers/structure-definition.controller';
+import {
+	handleGetStructureDefinition,
+	handleProcessStructureDefinition,
+} from '../controllers/structure-definition.controller';
 import { $ref } from '../schemas/structure-definition.schema';
 
 export async function structureDefinitionRoutes(app: FastifyInstance) {
+	app.get(
+		'/',
+		{
+			schema: {
+				tags: ['StructureDefinition'],
+				summary: 'Get StructureDefinitions',
+				description:
+					'Retrieves all StructureDefinitions stored in the database.',
+			},
+		},
+		handleGetStructureDefinition,
+	);
 	app.post(
 		'/',
 		{
