@@ -13,11 +13,12 @@ import type {
 	StreamTransformResult,
 	StreamTransformServiceParams,
 } from '../types/StreamTransform';
-import { applyTransformation } from '../utils/applyTransformation';
 import { getValue } from '../utils/getValueByPath';
 import { setValue } from '../utils/setValueByPath';
-import { validateValue } from '../utils/validateValue';
-import { FhirClientError } from './errors/FhirClientError';
+import {
+	transformationRegistry,
+	validationRegistry,
+} from '../utils/transformation';
 import { InvalidInputDataError } from './errors/InvalidInputDataError';
 import { createFhirResourceStream } from './fhir.fetch.service';
 import {
@@ -39,7 +40,6 @@ export async function streamTransformData({
 	// Se a validação falhar aqui, um erro (InvalidMappingError ou StructureDefinitionNotProcessedError) será lançado.
 	const mappingConfig = await getMappingConfigurationByName(mappingConfigName);
 
-	// --- Variáveis do Pipeline ---
 	let initialStream: Readable;
 	let parserStream: Duplex | null = null;
 	let transformStream: Transform;
@@ -48,7 +48,6 @@ export async function streamTransformData({
 
 	// 2. Configurar o Pipeline baseado na Direção
 	if (mappingConfig?.direction === Direction.TO_FHIR) {
-		// --- TO_FHIR: inputStream -> parser -> transformer -> serializer ---
 		if (!inputStream || !sourceContentType) {
 			throw new InvalidInputDataError(
 				'Input stream and source content type are required for TO_FHIR direction.',
@@ -83,11 +82,8 @@ export async function streamTransformData({
 			fhirServerUrlOverride,
 		);
 		outputStream = createNdjsonStringifyStream();
-		// Usar application/fhir+json pode ser enganoso para NDJSON, mas é o que muitos esperam.
-		// application/x-ndjson é mais correto tecnicamente.
-		outputContentType = 'application/fhir+json'; // Ou 'application/x-ndjson'
+		outputContentType = 'application/fhir+json';
 	} else if (mappingConfig?.direction === Direction.FROM_FHIR) {
-		// --- FROM_FHIR: fhirStream -> transformer -> serializer ---
 		if (!fhirQueryPath) {
 			throw new InvalidInputDataError(
 				'fhirQueryPath parameter is required for FROM_FHIR direction.',
@@ -98,7 +94,7 @@ export async function streamTransformData({
 		console.log(`FROM_FHIR: Creating FHIR stream for query: ${fhirQueryPath}`);
 		initialStream = createFhirResourceStream({
 			initialUrl: fhirQueryPath,
-			fhirServerUrl: fhirServerUrlOverride ?? process.env.FHIR_SERVER_BASE_URL, // Usa override ou .env
+			fhirServerUrl: fhirServerUrlOverride ?? process.env.FHIR_SERVER_BASE_URL,
 		});
 
 		transformStream = createFhirTransformStream(
@@ -141,8 +137,6 @@ export async function streamTransformData({
 			`STREAM PIPELINE ERROR for mapping '${mappingConfigName}':`,
 			err,
 		);
-		// Destruir streams anteriores pode ser complexo de gerenciar aqui
-		// O importante é que o erro seja logado. O cliente receberá uma resposta interrompida.
 	});
 
 	// 4. Retornar o stream final e o content type
@@ -160,266 +154,207 @@ function createFhirTransformStream(
 ): Transform {
 	return new Transform({
 		objectMode: true,
-		writableHighWaterMark: 16,
-		readableHighWaterMark: 16,
+
 		async transform(chunk, encoding, callback) {
-			const itemErrors: FieldProcessingError[] = []; // Coleta erros para este chunk
-			let resultItem: any = null; // Armazena o item transformado (ou null se erro total)
+			const itemErrors: FieldProcessingError[] = [];
+			let resultItem: any = null;
+			const sourceItem = chunk; // Item de entrada (linha CSV, obj JSON, Recurso FHIR)
 
 			try {
+				// --- Define o objeto de saída inicial ---
+				let outputItem: any = {};
 				if (config.direction === Direction.TO_FHIR) {
-					// --- TO_FHIR ---
-					const sourceItem = chunk;
-					const fhirResource: any = { resourceType: config.fhirResourceType };
+					outputItem = { resourceType: config.fhirResourceType };
 					if (config.structureDefinitionUrl) {
 						setValue(
-							fhirResource,
+							outputItem,
 							'meta.profile[0]',
 							config.structureDefinitionUrl,
 						);
 					}
+				}
 
-					for (const mapping of config.fieldMappings) {
-						const sourceValue = getValue(sourceItem, mapping.sourcePath);
-						let valueToSet = sourceValue; // Valor inicial
-						let transformationApplied = false;
+				// --- Processa cada mapeamento de campo ---
+				for (const mapping of config.fieldMappings) {
+					const sourceValue = getValue(sourceItem, mapping.sourcePath);
+					const targetPath =
+						config.direction === Direction.TO_FHIR
+							? mapping.targetFhirPath
+							: mapping.sourcePath;
+					const fhirPath =
+						config.direction === Direction.TO_FHIR
+							? mapping.targetFhirPath
+							: mapping.sourcePath;
 
-						// 1. Validação (só valida se sourceValue não for nulo, exceto para REQUIRED)
-						if (
-							mapping.validationType &&
-							(mapping.validationType.toUpperCase() === 'REQUIRED' ||
-								(sourceValue !== null && sourceValue !== undefined))
-						) {
-							const validationError = validateValue(
-								sourceValue,
-								mapping.validationType,
+					if (!targetPath) continue;
+
+					let valueToProcess = sourceValue;
+					let currentError: string | null = null;
+
+					// 1. Tratamento Especial: DEFAULT_VALUE se valor original for nulo/undefined
+					if (
+						(valueToProcess === null || valueToProcess === undefined) &&
+						mapping.transformationType?.toUpperCase() === 'DEFAULT_VALUE'
+					) {
+						const defaultFunc = transformationRegistry.get('DEFAULT_VALUE');
+						if (defaultFunc) {
+							const result = defaultFunc(null, mapping.transformationDetails);
+							if (result.success) {
+								valueToProcess = result.value;
+							} else {
+								currentError =
+									result.message || 'Failed to apply default value';
+							}
+						} else {
+							currentError =
+								'DEFAULT_VALUE transformation function not registered.';
+						}
+					}
+
+					// 2. Validação (Aplica se não houve erro e se há tipo de validação)
+					if (!currentError && mapping.validationType) {
+						const validationFunc = validationRegistry.get(
+							mapping.validationType.toUpperCase(),
+						);
+						if (validationFunc) {
+							// Passa o valor ATUAL (pode ter vindo do default value)
+							const validationErrorMsg = validationFunc(
+								valueToProcess,
 								mapping.validationDetails,
+								{ sourceItem },
 							);
-							if (validationError) {
+							if (validationErrorMsg) {
+								currentError = validationErrorMsg; // Guarda a mensagem de erro de validação
 								itemErrors.push({
 									fieldSourcePath: mapping.sourcePath,
-									fieldTargetPath: mapping.targetFhirPath,
-									inputValue: sourceValue,
+									fieldTargetPath: targetPath,
+									inputValue: sourceValue, // Reporta valor original
 									errorType: 'Validation',
-									message: validationError,
+									message: validationErrorMsg,
 									details: {
 										type: mapping.validationType,
 										details: mapping.validationDetails,
 									},
 								});
-								// Decide se continua: talvez não setar o valor se a validação falhar? Ou parar tudo?
-								// Por enquanto, apenas registra o erro e continua para transformação (se houver)
-								// Poderia adicionar uma flag 'stopOnError' na validação
 							}
+						} else {
+							const errMsg = `Validation function '${mapping.validationType}' not registered.`;
+							console.warn(`[Config Error] ${errMsg}`);
+							// Decide se adiciona como erro ou só loga
+							itemErrors.push({
+								fieldSourcePath: mapping.sourcePath,
+								fieldTargetPath: targetPath,
+								inputValue: sourceValue,
+								errorType: 'Validation',
+								message: errMsg,
+							});
 						}
+					}
 
-						// 2. Transformação (se houver) - só executa se não houver erro de validação *grave*? (Não implementado)
-						if (mapping.transformationType) {
-							const transformResult = applyTransformation(
-								sourceValue,
-								mapping.transformationType,
+					// 3. Transformação (Aplica se não houve erro até agora e se há tipo de transformação *diferente* de DEFAULT_VALUE)
+					if (
+						!currentError &&
+						mapping.transformationType &&
+						mapping.transformationType.toUpperCase() !== 'DEFAULT_VALUE'
+					) {
+						const transformationFunc = transformationRegistry.get(
+							mapping.transformationType.toUpperCase(),
+						);
+						if (transformationFunc) {
+							// Passa o valor ATUAL
+							const transformResult = transformationFunc(
+								valueToProcess,
 								mapping.transformationDetails,
-								sourceItem,
+								{ sourceItem },
 							);
 							if (transformResult.success) {
-								valueToSet = transformResult.value; // Usa valor transformado
-								transformationApplied = true;
+								valueToProcess = transformResult.value; // Atualiza com valor transformado
 							} else {
+								currentError =
+									transformResult.message ||
+									`Transformation '${mapping.transformationType}' failed.`;
 								itemErrors.push({
 									fieldSourcePath: mapping.sourcePath,
-									fieldTargetPath: mapping.targetFhirPath,
-									inputValue: sourceValue,
+									fieldTargetPath: targetPath,
+									inputValue: sourceValue, // Reporta valor original
 									errorType: 'Transformation',
-									// biome-ignore lint/style/noNonNullAssertion: <explanation>
-									message: transformResult.message!,
+									message: currentError,
 									details: {
 										type: mapping.transformationType,
 										details: mapping.transformationDetails,
 									},
 								});
-								// Se a transformação falhou, provavelmente não setamos o valor? Ou setamos o original?
-								// Por enquanto, vamos setar o valor original se a transformação falhar.
-								valueToSet = sourceValue;
 							}
+						} else {
+							const errMsg = `Transformation function '${mapping.transformationType}' not registered.`;
+							console.warn(`[Config Error] ${errMsg}`);
+							itemErrors.push({
+								fieldSourcePath: mapping.sourcePath,
+								fieldTargetPath: targetPath,
+								inputValue: sourceValue,
+								errorType: 'Transformation',
+								message: errMsg,
+							});
 						}
+					}
 
-						// 3. Define o valor (final) no recurso FHIR
-						const targetPath = mapping.targetFhirPath;
-						// Só define se o valor final não for undefined/null (ou se for resultado de DEFAULT_VALUE)
+					// 4. Define o valor final no item de saída, *se não houve erro* para este campo específico? (Decisão de projeto)
+					//    Ou define mesmo se houve erro? Vamos definir apenas se currentError for null.
+					if (
+						currentError === null &&
+						valueToProcess !== undefined &&
+						valueToProcess !== null
+					) {
 						if (
-							(valueToSet !== undefined && valueToSet !== null && targetPath) ||
-							(transformationApplied &&
-								mapping.transformationType?.toUpperCase() === 'DEFAULT_VALUE')
+							config.direction === Direction.FROM_FHIR &&
+							config.sourceType === SourceType.CSV
 						) {
-							// Não setar se houve erro de validação? (Decisão de projeto) - Por enquanto, seta mesmo com erro de validação.
-							setValue(fhirResource, targetPath, valueToSet);
+							const columnName = targetPath.split('.')[0] || targetPath;
+							outputItem[columnName] = valueToProcess;
+						} else {
+							setValue(outputItem, targetPath, valueToProcess);
 						}
-					} // Fim do loop de fieldMappings
+					}
+				} // Fim do loop de fieldMappings
 
-					resultItem = fhirResource; // O recurso FHIR montado
-
-					// Envio Assíncrono (como antes)
+				// Define resultItem baseado na direção
+				if (config.direction === Direction.TO_FHIR) {
+					resultItem = outputItem;
+					// Envio Assíncrono (só se não houver erros no item completo)
 					if (itemErrors.length === 0 && resultItem && sendToFhir) {
-						// Só envia se não houver erros no item
-						// Envio assíncrono, não espera, apenas dispara
 						sendResourceToFhirServer({
 							resource: resultItem,
 							resourceType: config.fhirResourceType,
 							fhirServerUrl: fhirServerUrlOverride,
-						})
-							.then((response) => {
-								// Log apenas se não for um OperationOutcome de erro
-								if (
-									response?.resourceType !== 'OperationOutcome' ||
-									response?.issue?.every(
-										(i: any) =>
-											i.severity === 'information' || i.severity === 'warning',
-									)
-								) {
-									console.log(
-										`FHIR Client: Async send successful for ${config.fhirResourceType}/${response?.id || '(no id)'}`,
-									);
-								} else {
-									console.warn(
-										`FHIR Client: Async send for ${config.fhirResourceType} resulted in OperationOutcome:`,
-										response.issue,
-									);
-								}
-							})
-							.catch((err) => {
-								// Logar erro do envio assíncrono
-								console.error(
-									`FHIR Client: Async send ERROR for ${config.fhirResourceType}: ${err.message}`,
-									err instanceof FhirClientError ? err.responseData : '',
-								);
-							});
-					}
-				} else if (config.direction === Direction.FROM_FHIR) {
-					// --- FROM_FHIR ---
-					const fhirResource = chunk;
-					const outputItem: any = {};
-
-					if (
-						!fhirResource ||
-						fhirResource?.resourceType !== config.fhirResourceType
-					) {
-						itemErrors.push({
-							fieldTargetPath: 'N/A',
-							inputValue: fhirResource,
-							errorType: 'Validation',
-							message: `Expected '${config.fhirResourceType}', got '${fhirResource?.resourceType}'. Skipping.`,
 						});
-						resultItem = null; // Não processa
-					} else {
-						for (const mapping of config.fieldMappings) {
-							const fhirPath = mapping.targetFhirPath;
-							const targetPath = mapping.sourcePath; // Path no JSON/CSV de saída
-							let valueToSet: any = null; // Valor final para o outputItem
-
-							if (fhirPath && targetPath) {
-								const sourceValue = getValue(fhirResource, fhirPath);
-
-								// 1. Validação (Aplicada ao valor FHIR? Menos comum, mas possível)
-								if (
-									mapping.validationType &&
-									(mapping.validationType.toUpperCase() === 'REQUIRED' ||
-										(sourceValue !== null && sourceValue !== undefined))
-								) {
-									const validationError = validateValue(
-										sourceValue,
-										mapping.validationType,
-										mapping.validationDetails,
-									);
-									if (validationError) {
-										itemErrors.push({
-											fieldSourcePath: fhirPath,
-											fieldTargetPath: targetPath,
-											inputValue: sourceValue,
-											errorType: 'Validation',
-											message: validationError,
-											details: {
-												type: mapping.validationType,
-												details: mapping.validationDetails,
-											},
-										});
-									}
-								}
-
-								// 2. Transformação (Aplicada ao valor FHIR)
-								let transformationApplied = false;
-								if (mapping.transformationType) {
-									const transformResult = applyTransformation(
-										sourceValue,
-										mapping.transformationType,
-										mapping.transformationDetails,
-										fhirResource,
-									);
-									if (transformResult.success) {
-										valueToSet = transformResult.value;
-										transformationApplied = true;
-									} else {
-										itemErrors.push({
-											fieldSourcePath: fhirPath,
-											fieldTargetPath: targetPath,
-											inputValue: sourceValue,
-											errorType: 'Transformation',
-											// biome-ignore lint/style/noNonNullAssertion: <explanation>
-											message: transformResult.message!,
-											details: {
-												type: mapping.transformationType,
-												details: mapping.transformationDetails,
-											},
-										});
-										valueToSet = sourceValue; // Usa original se transformação falhar
-									}
-								} else {
-									valueToSet = sourceValue; // Usa original se não houver transformação
-								}
-
-								// 3. Define o valor no item de saída
-								if (
-									(valueToSet !== undefined && valueToSet !== null) ||
-									(transformationApplied &&
-										mapping.transformationType?.toUpperCase() ===
-											'DEFAULT_VALUE')
-								) {
-									if (config.sourceType === SourceType.CSV) {
-										const columnName = targetPath.split('.')[0] || targetPath;
-										outputItem[columnName] = valueToSet;
-									} else {
-										setValue(outputItem, targetPath, valueToSet);
-									}
-								}
-							} // Fim if(fhirPath && targetPath)
-						} // Fim loop fieldMappings
+					}
+				} else {
+					// FROM_FHIR
+					// Só retorna se não for um objeto vazio (pode acontecer se nenhum campo for mapeado ou todos falharem)
+					if (Object.keys(outputItem).length > 0 || itemErrors.length > 0) {
 						resultItem = outputItem;
-					} // Fim else (recurso válido)
-				} // Fim if/else direction
+					} else {
+						resultItem = null;
+					}
+				}
 
-				// --- Emissão para o Próximo Estágio ---
 				if (itemErrors.length > 0) {
-					// Emite um objeto de erro
 					this.push({
 						_isTransformError: true,
 						errors: itemErrors,
-						originalItem: chunk, // Envia o item original que causou o erro
+						originalItem: chunk,
 					} as StreamItemError);
 				} else if (resultItem !== null) {
-					// Emite o item transformado com sucesso
 					this.push(resultItem);
 				}
-				// else: Se resultItem for nulo e não houver erros (ex: FROM_FHIR com tipo errado), não emite nada
-
-				callback(); // Sinaliza que este chunk foi processado (com ou sem emissão)
+				callback();
 			} catch (error: any) {
-				// Erro inesperado DENTRO da lógica de transformação do item
 				console.error(
 					'UNEXPECTED TRANSFORM STREAM ERROR:',
 					error,
 					'Item:',
 					JSON.stringify(chunk).substring(0, 200),
 				);
-				// Emite um objeto de erro genérico para este item
 				this.push({
 					_isTransformError: true,
 					errors: [
@@ -432,73 +367,8 @@ function createFhirTransformStream(
 					],
 					originalItem: chunk,
 				} as StreamItemError);
-				callback(); // Continua o stream, mas reporta o erro do item
-				// Alternativa: callback(error) -> Pararia todo o pipeline
+				callback();
 			}
 		},
 	});
-}
-
-// --- Funções de Transformação de Item Individual ---
-
-function transformSingleItemToFhir(
-	item: any,
-	config: MappingConfiguration & { fieldMappings: FieldMapping[] },
-): any {
-	// Inicia o recurso APENAS com resourceType
-	const fhirResource: any = {
-		resourceType: config.fhirResourceType,
-	};
-	// Adiciona meta.profile se a SD foi especificada no mapeamento
-	if (config.structureDefinitionUrl) {
-		setValue(fhirResource, 'meta.profile[0]', config.structureDefinitionUrl);
-	}
-
-	for (const mapping of config.fieldMappings) {
-		const sourceValue = getValue(item, mapping.sourcePath);
-
-		// Obtém o targetFhirPath CORRIGIDO (sem prefixo de tipo)
-		const targetPath = mapping.targetFhirPath; // Deve ser relativo (ex: 'id', 'name[0].text')
-
-		if (sourceValue !== undefined && sourceValue !== null && targetPath) {
-			// Define o valor usando o path relativo
-			setValue(fhirResource, targetPath, sourceValue);
-		}
-	}
-	return fhirResource;
-}
-
-function transformSingleItemFromFhir(
-	fhirResource: any,
-	config: MappingConfiguration & { fieldMappings: FieldMapping[] },
-): any {
-	const outputItem: any = {};
-
-	if (!fhirResource || fhirResource?.resourceType !== config.fhirResourceType) {
-		console.warn(
-			`FROM_FHIR: Skipping item. Expected FHIR resourceType '${config.fhirResourceType}' but got '${fhirResource?.resourceType}'.`,
-		);
-		return null; // Retorna nulo para ser filtrado no stream
-	}
-
-	for (const mapping of config.fieldMappings) {
-		const fhirPath = mapping.targetFhirPath; // Path dentro do recurso FHIR
-		const targetPath = mapping.sourcePath; // Path no JSON/CSV de saída
-
-		if (fhirPath && targetPath) {
-			const fhirValue = getValue(fhirResource, fhirPath);
-
-			if (fhirValue !== undefined && fhirValue !== null) {
-				// Se o destino for CSV, usamos apenas a primeira parte do sourcePath como chave
-				if (config.sourceType === SourceType.CSV) {
-					const columnName = targetPath.split('.')[0] || targetPath; // Pega a primeira parte
-					outputItem[columnName] = fhirValue;
-				} else {
-					// Para JSON, permite aninhar usando o sourcePath completo
-					setValue(outputItem, targetPath, fhirValue);
-				}
-			}
-		}
-	}
-	return outputItem;
 }

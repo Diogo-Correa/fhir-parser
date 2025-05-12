@@ -30,6 +30,7 @@
     "zod": "^3.24.2"
   },
   "dependencies": {
+    "@fastify/multipart": "^9.0.3",
     "@prisma/client": "^6.6.0",
     "axios": "^1.8.4",
     "date-fns-tz": "^3.2.0",

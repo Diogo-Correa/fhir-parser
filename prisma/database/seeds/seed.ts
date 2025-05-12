@@ -50,7 +50,7 @@ async function main() {
 						},
 					},
 					{
-						sourcePath: 'genero_csv',
+						sourcePath: 'genero',
 						targetFhirPath: 'gender', // Ex: M, F, I no CSV
 						transformationType: 'CODE_LOOKUP',
 						transformationDetails: {
