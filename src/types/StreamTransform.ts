@@ -5,9 +5,9 @@ export interface StreamTransformServiceParams {
 	mappingConfigName: string;
 	inputStream?: Readable; // Para TO_FHIR
 	sourceContentType?: string; // Para TO_FHIR
-	fhirQueryPath?: string; // Para FROM_FHIR
+	fhirQueryPath?: string | undefined | null;
 	sendToFhir?: boolean; // Apenas TO_FHIR
-	fhirServerUrlOverride?: string;
+	fhirServerUrlOverride?: string | undefined | null;
 }
 
 export interface StreamTransformResult {

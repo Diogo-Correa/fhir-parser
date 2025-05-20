@@ -26,6 +26,15 @@ export function createJsonParserStream(): Transform {
 	});
 	valueStream.pipe(objectExtractor);
 
+	// Evita múltiplos push(null) no combinedStream
+	let combinedStreamEnded = false;
+	function endCombinedStreamOnce() {
+		if (!combinedStreamEnded) {
+			combinedStreamEnded = true;
+			combinedStream.push(null);
+		}
+	}
+
 	const combinedStream = new Transform({
 		writableObjectMode: false,
 		readableObjectMode: true,
@@ -47,7 +56,7 @@ export function createJsonParserStream(): Transform {
 			combinedStream.once('drain', () => objectExtractor.resume());
 		}
 	});
-	objectExtractor.on('end', () => combinedStream.push(null));
+	objectExtractor.on('end', endCombinedStreamOnce);
 	objectExtractor.on('error', (err) => combinedStream.emit('error', err));
 	jsonParser.on('error', (err) => combinedStream.emit('error', err));
 

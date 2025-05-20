@@ -1,30 +1,38 @@
 import { buildJsonSchemas } from 'fastify-zod';
 import { z } from 'zod';
 
-export const transformRequestBodySchema = z.object({
-	mappingConfigName: z
-		.string()
-		.min(1, { message: 'Mapping config name is required' }),
-	data: z.any(),
-	sendToFhirServer: z.boolean().optional().default(false),
-	fhirServerUrlOverride: z.string().url().optional(),
-});
-
-export const transformApiSchema = z.object({
+export const transformBodySchema = z.object({
 	mappingConfigName: z
 		.string({ required_error: 'mappingConfigName is required' })
-		.min(1),
-	sendToFhirServer: z.boolean().optional().default(false),
-	fhirServerUrlOverride: z.string().url().optional(),
-	fhirQueryPath: z.string().optional(), // Obrigatório para FROM_FHIR (validado no serviço)
+		.min(1, 'mappingConfigName cannot be empty'),
+
+	// Para booleanos de multipart, eles vêm como string 'true' ou 'false'
+	sendToFhirServer: z
+		.union([z.boolean(), z.string()])
+		.transform((val) =>
+			typeof val === 'string' ? val.toLowerCase() === 'true' : val,
+		)
+		.optional()
+		.default(false),
+
+	fhirServerUrlOverride: z
+		.string()
+		.url('Invalid URL for fhirServerUrlOverride')
+		.optional()
+		.nullable()
+		.or(z.literal('')), // Permite nulo ou string vazia
+
+	fhirQueryPath: z.string().optional().nullable(), // Para FROM_FHIR
+
+	// 'data' é para JSON inline (TO_FHIR). O arquivo (para multipart) é tratado separadamente pelo controller.
+	data: z.any().optional().nullable(),
 });
 
-export type TransformRequestBody = z.infer<typeof transformRequestBodySchema>;
-export type TransformApiParams = z.infer<typeof transformApiSchema>;
+export type TransformBodyParams = z.infer<typeof transformBodySchema>;
 
 export const { schemas: transformSchemas, $ref } = buildJsonSchemas(
 	{
-		transformRequestBodySchema,
+		transformBodySchema,
 	},
 	{ $id: 'transformSchemas' },
 );

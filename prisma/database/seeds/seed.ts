@@ -79,6 +79,98 @@ async function main() {
 	console.log('Upserted mapping: CsvToPatientBasic');
 
 	await prisma.mappingConfiguration.upsert({
+		where: { name: 'ExampleJsonToPatient' },
+		update: { structureDefinitionUrl: brCorePatientUrl },
+		create: {
+			name: 'ExampleJsonToPatient',
+			description:
+				'Example mapping from a custom JSON structure to FHIR Patient (BR Core Profile)',
+			sourceType: SourceType.JSON,
+			fhirResourceType: 'Patient',
+			direction: Direction.TO_FHIR,
+			structureDefinitionUrl: brCorePatientUrl,
+			fieldMappings: {
+				create: [
+					{
+						sourcePath: 'pacienteIdInterno',
+						targetFhirPath: 'id',
+						validationType: 'REQUIRED',
+					},
+					{
+						sourcePath: 'cpf',
+						targetFhirPath: 'identifier[0].value',
+						validationType: 'REGEX',
+						validationDetails: {
+							pattern: '^\\d{11}$',
+							message: 'CPF deve ter 11 dígitos numéricos',
+						},
+					},
+					{
+						sourcePath: 'nomeCompleto',
+						targetFhirPath: 'name[0].text',
+						validationType: 'REQUIRED',
+					},
+					{
+						sourcePath: 'dataNascimento', // Esperado no formato dd/MM/yyyy
+						targetFhirPath: 'birthDate',
+						validationType: 'REGEX',
+						validationDetails: { pattern: '^\\d{2}/\\d{2}/\\d{4}$' },
+						transformationType: 'FORMAT_DATE',
+						transformationDetails: {
+							inputFormat: 'dd/MM/yyyy',
+							outputFormat: 'yyyy-MM-dd',
+						},
+					},
+					{
+						sourcePath: 'sexo', // Esperado "M", "F", "I"
+						targetFhirPath: 'gender',
+						transformationType: 'CODE_LOOKUP',
+						transformationDetails: {
+							map: { M: 'male', F: 'female', I: 'other' },
+							defaultValue: 'unknown',
+						},
+						validationType: 'VALUESET', // Valida 'male', 'female', 'other', 'unknown'
+						validationDetails: { valueSetUrl: administrativeGenderVs },
+					},
+					// --- Ativo ---
+					{
+						sourcePath: 'statusAtivo', // Esperado true/false
+						targetFhirPath: 'active',
+						// Se a entrada fosse "S"/"N", usaria CODE_LOOKUP para true/false
+					},
+					{
+						sourcePath: 'contatos[0].telefone',
+						targetFhirPath: 'telecom[0].value',
+					},
+					{
+						sourcePath: 'contatos[1].email',
+						targetFhirPath: 'telecom[1].value',
+					},
+					// --- Extensão Raça/Cor (Exemplo - baseado no perfil BR) ---
+					// Supondo que br-core-patient define a extensão de raça/cor
+					// e que ela tenha um elemento 'valueCodeableConcept.coding[0].code'
+					// e 'valueCodeableConcept.coding[0].system' com valor fixo.
+					// E a extensão principal tem url 'http://www.saude.gov.br/fhir/r4/StructureDefinition/BRRacaCorEtnia-1.0'
+					// E a sub-extensão 'race' tem url 'race' relativa à extensão principal.
+					{
+						sourcePath: 'codigoRacaCor', // Ex: "01" (Branca), "02" (Preta), etc.
+						targetFhirPath:
+							"extension[?url='http://www.saude.gov.br/fhir/r4/StructureDefinition/BRRacaCorEtnia-1.0'].extension[?url='race'].valueCodeableConcept.coding[0].code",
+					},
+					// O system da raça/cor provavelmente é um fixedValue no perfil da extensão, então não mapearíamos.
+					// Se não fosse, seria:
+					// {
+					//   targetFhirPath: "extension[?url='http://www.saude.gov.br/fhir/r4/StructureDefinition/BRRacaCorEtnia-1.0'].extension[?url='race'].valueCodeableConcept.coding[0].system",
+					//   transformationType: "DEFAULT_VALUE",
+					//   transformationDetails: { value: "http://www.saude.gov.br/fhir/r4/CodeSystem/BRRacaCor" }
+					// }
+				],
+			},
+		},
+	});
+	console.log('Upserted mapping: ExampleJsonToPatient');
+
+	await prisma.mappingConfiguration.upsert({
 		where: { name: 'JsonToObservationVitals' },
 		update: { structureDefinitionUrl: observationBaseUrl },
 		create: {
