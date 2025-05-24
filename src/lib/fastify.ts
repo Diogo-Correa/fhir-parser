@@ -8,6 +8,7 @@ import { FhirClientError } from '../services/errors/FhirClientError';
 import { InvalidInputDataError } from '../services/errors/InvalidInputDataError';
 import { InvalidMappingError } from '../services/errors/InvalidMappingError';
 import { MappingConfigurationNotFoundError } from '../services/errors/MappingConfigurationNotFoundError';
+import { MultipartRequestError } from '../services/errors/MultipartRequestError';
 import { StructureDefinitionNotProcessedError } from '../services/errors/StructureDefinitionNotProcessedError';
 import '../utils/transformation';
 
@@ -18,41 +19,62 @@ export function buildServer(): FastifyInstance {
 
 	app.register(sensible);
 	app.register(fastifyMultipart);
-	app.addContentTypeParser('text/csv', (request, payload, done) => {
-		done(null);
-	});
 
-	app.setErrorHandler((error, request, reply) => {
+	app.setErrorHandler((error, _, reply) => {
 		if (error instanceof ZodError) {
-			return reply
-				.status(400)
-				.send({ message: 'Validation error.', issues: error.format() });
+			return reply.status(400).send({
+				statusCode: 400,
+				success: false,
+				message: 'Validation error.',
+				issues: error.flatten().fieldErrors,
+			});
+		}
+
+		if (error.validation) {
+			return reply.status(400).send({
+				statusCode: 400,
+				success: false,
+				message: 'Validation error.',
+				errors: error.message,
+			});
 		}
 
 		if (error instanceof MappingConfigurationNotFoundError) {
-			return reply.status(404).send({ message: error.message });
+			return reply
+				.status(404)
+				.send({ statusCode: 404, success: false, message: error.message });
 		}
 
 		if (
 			error instanceof InvalidInputDataError ||
-			error instanceof InvalidMappingError
+			error instanceof InvalidMappingError ||
+			error instanceof MultipartRequestError
 		) {
-			return reply.status(400).send({ message: error.message });
+			return reply
+				.status(400)
+				.send({ statusCode: 400, success: false, message: error.message });
 		}
 
 		if (error instanceof FhirClientError) {
-			// Pode ser um 502 Bad Gateway se for um erro ao contatar um serviço externo
-			return reply.status(502).send({ message: error.message });
+			return reply
+				.status(502)
+				.send({ statusCode: 502, success: false, message: error.message });
 		}
 
 		if (error instanceof StructureDefinitionNotProcessedError) {
-			return reply.status(422).send({ message: error.message }); // 422 Unprocessable Entity
+			return reply
+				.status(422)
+				.send({ statusCode: 422, success: false, message: error.message });
 		}
 
 		app.log.error(error);
 
 		// Erro genérico para o cliente
-		return reply.status(500).send({ message: 'Internal server error.' });
+		return reply.status(500).send({
+			statusCode: 500,
+			success: false,
+			message: 'Internal server error.',
+		});
 	});
 
 	for (const schema of schemas) app.addSchema(schema);

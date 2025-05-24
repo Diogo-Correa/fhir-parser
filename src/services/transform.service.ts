@@ -23,7 +23,6 @@ import { InvalidInputDataError } from './errors/InvalidInputDataError';
 import { createFhirResourceStream } from './fhir.fetch.service';
 import {
 	createCsvParserStream,
-	createCsvStringifyStream,
 	createJsonParserStream,
 	createNdjsonStringifyStream,
 } from './parser.service';
@@ -81,8 +80,9 @@ export async function streamTransformData({
 			sendToFhir,
 			fhirServerUrlOverride ?? undefined,
 		);
+		// Output is NDJSON because createFhirTransformStream emits {type:'data'/'error'} objects
 		outputSerializerStream = createNdjsonStringifyStream();
-		outputContentType = 'application/fhir+json';
+		outputContentType = 'application/x-ndjson'; // Stream of JSON objects
 	} else if (mappingConfig?.direction === Direction.FROM_FHIR) {
 		if (!fhirQueryPath) {
 			throw new InvalidInputDataError(
@@ -99,13 +99,10 @@ export async function streamTransformData({
 			false,
 			undefined,
 		);
-		if (mappingConfig?.sourceType === SourceType.CSV) {
-			outputSerializerStream = createCsvStringifyStream();
-			outputContentType = 'text/csv';
-		} else {
-			outputSerializerStream = createNdjsonStringifyStream();
-			outputContentType = 'application/x-ndjson';
-		}
+		// Output is NDJSON because createFhirTransformStream emits {type:'data'/'error'} objects
+		// The controller will take this NDJSON stream and build the final JSON response.
+		outputSerializerStream = createNdjsonStringifyStream();
+		outputContentType = 'application/x-ndjson'; // Stream of JSON objects
 	} else {
 		throw new Error(
 			`Unsupported transformation direction in mapping '${mappingConfigName}': ${mappingConfig?.direction}`,
@@ -377,11 +374,15 @@ function createFhirTransformStream(
 				// Emissão
 				if (itemErrors.length > 0) {
 					this.push({
-						_isTransformError: true,
-						errors: itemErrors,
-						originalItem: chunk,
-					} as StreamItemError);
-				} else if (resultItem !== null) this.push(resultItem);
+						type: 'error',
+						error: {
+							errors: itemErrors,
+							originalItem: chunk,
+						} as StreamItemError, // Cast to StreamItemError for type consistency if used elsewhere
+					});
+				} else if (resultItem !== null) {
+					this.push({ type: 'data', item: resultItem });
+				}
 				callback();
 			} catch (error: any) {
 				console.error(
@@ -391,17 +392,19 @@ function createFhirTransformStream(
 					JSON.stringify(chunk).substring(0, 200),
 				);
 				this.push({
-					_isTransformError: true,
-					errors: [
-						{
-							fieldTargetPath: 'N/A',
-							inputValue: chunk,
-							errorType: 'Transformation',
-							message: `Unexpected system error processing item: ${error.message}`,
-						},
-					],
-					originalItem: chunk,
-				} as StreamItemError);
+					type: 'error',
+					error: {
+						errors: [
+							{
+								fieldTargetPath: 'N/A',
+								inputValue: chunk,
+								errorType: 'Transformation',
+								message: `Unexpected system error processing item: ${error.message}`,
+							},
+						],
+						originalItem: chunk,
+					} as StreamItemError, // Cast to StreamItemError for type consistency
+				});
 				callback();
 			}
 		},

@@ -1,169 +1,212 @@
-// src/controllers/transform.controller.ts (MODIFICADO)
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import {
 	type TransformBodyParams,
-	transformBodySchema,
+	type TransformFileParams,
+	transformFileSchema,
 } from '../schemas/transform.schema'; // Certifique-se que este schema agora tem 'data' como array opcional
 
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { MultipartRequestError } from '../services/errors/MultipartRequestError';
 import { streamTransformData } from '../services/transform.service';
 
 export async function handleTransformRequest(
-	request: FastifyRequest,
+	request: FastifyRequest<{ Body: TransformBodyParams }>,
 	reply: FastifyReply,
 ) {
-	let params: TransformBodyParams | undefined = undefined;
+	const {
+		data,
+		mappingConfigName,
+		fhirQueryPath,
+		fhirServerUrlOverride,
+		sendToFhirServer,
+	} = request.body;
 	let inputStream: Readable | undefined;
 	let sourceContentType: string | undefined = request.headers['content-type'];
 
-	if (request.isMultipart()) {
-		request.log.info('Multipart request detected for transformation');
-
-		const filePart = await request.file({});
-		const rawParamsFromMultipart: any = {};
-		if (filePart?.fields) {
-			// Coleta todos os campos. 'data' pode ser um campo que precise de JSON.parse se vier como string.
-			for (const key in filePart.fields) {
-				const field = filePart.fields[key] as any;
-				if (key === 'data' && typeof field.value === 'string') {
-					try {
-						rawParamsFromMultipart[key] = JSON.parse(field.value);
-					} catch (e) {
-						request.log.warn(
-							{ field: key, value: field.value },
-							'Failed to parse multipart field "data" as JSON',
-						);
-						rawParamsFromMultipart[key] = field.value; // Mantém como string se não for JSON válido
-					}
-				} else {
-					rawParamsFromMultipart[key] = field.value;
-				}
-			}
-		}
-
-		// Validar os parâmetros obtidos do multipart
-		const validatedMultipartParams = transformBodySchema.safeParse(
-			rawParamsFromMultipart,
-		);
-		if (!validatedMultipartParams.success) {
-			request.log.error(
-				{ errors: validatedMultipartParams.error.flatten() },
-				'Multipart params validation failed',
-			);
-			reply.status(400).send({
-				message: 'Invalid multipart parameters',
-				errors: validatedMultipartParams.error.flatten().fieldErrors,
-			});
-			return;
-		}
-		params = validatedMultipartParams.data;
-
-		if (filePart?.file) {
-			// Checa se filePart.file existe
-			inputStream = filePart.file;
-			sourceContentType = filePart.mimetype;
-			request.log.info(
-				`Multipart file received: ${filePart.filename} (type: ${sourceContentType}) for mapping: ${params.mappingConfigName}`,
-			);
-		} else if (params.data) {
-			// 'data' (array de objetos) fornecido via campo multipart
-			request.log.info(
-				'Multipart request with inline "data" field for transformation.',
-			);
-			// Converter array de objetos para NDJSON stream
-			const ndJsonDataString = params.data
-				.map((item) => JSON.stringify(item))
-				.join('\n');
-			inputStream = Readable.from(ndJsonDataString);
-			sourceContentType = 'application/x-ndjson'; // MODIFICADO para NDJSON
-		} else if (!params.fhirQueryPath) {
-			// TO_FHIR precisa de dados (arquivo ou inline 'data'), mas nenhum foi fornecido
-			request.log.warn(
-				'Multipart request for TO_FHIR is missing a file part and no inline data provided.',
-			);
-			reply.status(400).send({
-				message:
-					'File part or inline "data" field (as an array of objects) is required for TO_FHIR transformation via multipart when fhirQueryPath is not present.',
-			});
-			return;
-		}
-		// Se for FROM_FHIR (params.fhirQueryPath existe), inputStream pode ser undefined (OK)
-	} else if (sourceContentType?.includes('application/json')) {
-		request.log.info('Application/json request detected for transformation');
-		const validatedBody = transformBodySchema.safeParse(request.body);
-
-		if (!validatedBody.success) {
-			request.log.error(
-				{ errors: validatedBody.error.flatten() },
-				'JSON body validation failed',
-			);
-			reply.status(400).send({
-				message: 'Invalid JSON body',
-				errors: validatedBody.error.flatten().fieldErrors,
-			});
-			return;
-		}
-		params = validatedBody.data;
-
-		if (params.data) {
-			// TO_FHIR com dados JSON inline (agora um array de objetos)
-			request.log.info(
-				'JSON request with "data" field (array of objects) for transformation.',
-			);
-			// Converter array de objetos para NDJSON stream
-			const ndJsonDataString = params.data
-				.map((item) => JSON.stringify(item))
-				.join('\n');
-			inputStream = Readable.from(ndJsonDataString);
-			sourceContentType = 'application/x-ndjson'; // MODIFICADO para NDJSON
-		} else if (params.fhirQueryPath) {
-			// FROM_FHIR
-			request.log.info('JSON request with "fhirQueryPath" for transformation.');
-			inputStream = undefined;
-			// sourceContentType já é application/json, o que pode ser ok para FROM_FHIR
-			// ou pode ser irrelevante se nenhum corpo de entrada for realmente lido pelo serviço.
-		} else {
-			request.log.warn(
-				'JSON request for TO_FHIR missing "data" field, and not a FROM_FHIR request.',
-			);
-			reply.status(400).send({
-				message:
-					'JSON request for TO_FHIR must contain "data" field (as an array of objects), or "fhirQueryPath" for FROM_FHIR.',
-			});
-			return;
-		}
+	if (data) {
+		const ndJsonDataString = data
+			.map((item) => JSON.stringify(item))
+			.join('\n');
+		inputStream = Readable.from(ndJsonDataString);
+		sourceContentType = 'application/x-ndjson';
+	} else if (fhirQueryPath) {
+		request.log.info('JSON request with "fhirQueryPath" for transformation.');
+		inputStream = undefined;
 	} else {
 		request.log.warn(
-			`Unsupported Content-Type for transformation: ${sourceContentType}`,
+			'JSON request for TO_FHIR missing "data" field, and not a FROM_FHIR request.',
 		);
-		reply.status(415).send({
-			message: `Unsupported Content-Type: ${sourceContentType}. Use application/json or multipart/form-data.`,
+		reply.status(400).send({
+			message:
+				'JSON request for TO_FHIR must contain "data" field (as an array of objects), or "fhirQueryPath" for FROM_FHIR.',
 		});
 		return;
 	}
 
-	// Verifica se 'params' foi definido. Se não, algo deu muito errado.
-	if (!params) {
-		request.log.error(
-			'Params were not determined before calling service. This should not happen.',
-		);
-		reply.status(500).send({
-			message: 'Internal server error: Could not determine request parameters.',
-		});
-		return;
-	}
+	const { outputStream } = await streamTransformData({
+		mappingConfigName: mappingConfigName,
+		inputStream: inputStream,
+		fhirQueryPath: fhirQueryPath,
+		sourceContentType: sourceContentType,
+		sendToFhir: sendToFhirServer,
+		fhirServerUrlOverride: fhirServerUrlOverride,
+	});
 
-	// Chama o serviço
-	const { outputStream, outputContentType } = await streamTransformData({
+	reply.raw.setHeader('Content-Type', 'application/json');
+	reply.raw.write('{"success":true,"message":"ETL executado","data":[');
+
+	const processingErrors: any[] = [];
+	let firstDataItem = true;
+
+	const streamProcessor = new Writable({
+		write(chunk, encoding, callback) {
+			try {
+				const output = JSON.parse(chunk.toString());
+				if (output.type === 'data') {
+					if (!firstDataItem) {
+						reply.raw.write(',');
+					}
+					reply.raw.write(JSON.stringify(output.item));
+					firstDataItem = false;
+				} else if (output.type === 'error') {
+					processingErrors.push(output.error);
+				}
+				callback();
+			} catch (err) {
+				callback(err as Error);
+			}
+		},
+	});
+
+	try {
+		await pipeline(outputStream, streamProcessor);
+		reply.raw.write('],"errors":[');
+		for (let i = 0; i < processingErrors.length; i++) {
+			if (i > 0) {
+				reply.raw.write(',');
+			}
+			reply.raw.write(JSON.stringify(processingErrors[i]));
+		}
+		reply.raw.write(']}');
+	} catch (err) {
+		request.log.error('Error in pipeline processing for JSON request:', err);
+		if (!reply.raw.headersSent) {
+			reply.status(500).send({
+				success: false,
+				message: 'Stream processing error',
+				data: [],
+				errors: [err],
+			});
+		} else {
+			reply.raw.write(
+				'],"errors":[{"type":"PipelineError","message":"Stream processing error after data started"}]}',
+			);
+		}
+	} finally {
+		if (!reply.raw.writableEnded) {
+			reply.raw.end();
+		}
+	}
+}
+
+export async function handleTransformByFile(
+	request: FastifyRequest<{ Body: TransformFileParams }>,
+	reply: FastifyReply,
+) {
+	let sourceContentType: string | undefined = request.headers['content-type'];
+
+	if (!request.isMultipart())
+		throw new MultipartRequestError(
+			'Invalid request. Expected multipart/form-data.',
+		);
+
+	const filePart = await request.file({});
+
+	if (!filePart?.file)
+		throw new MultipartRequestError('File part is missing in the request.');
+
+	const getFieldValue = (field: any) => {
+		if (Array.isArray(field)) {
+			return field[0]?.value;
+		}
+		return field?.value;
+	};
+
+	const params: TransformFileParams = {
+		mappingConfigName: getFieldValue(filePart.fields.mappingConfigName),
+		sendToFhirServer: getFieldValue(filePart.fields.sendToFhirServer),
+		fhirServerUrlOverride: getFieldValue(filePart.fields.fhirServerUrlOverride),
+		file: filePart.file,
+	};
+
+	transformFileSchema.parse(params);
+
+	const inputStream = filePart.file;
+	sourceContentType = filePart.mimetype;
+
+	const { outputStream } = await streamTransformData({
 		mappingConfigName: params.mappingConfigName,
-		inputStream: inputStream, // Pode ser undefined para FROM_FHIR
+		inputStream: inputStream,
 		fhirQueryPath: params.fhirQueryPath,
-		sourceContentType: sourceContentType, // Agora pode ser 'application/x-ndjson'
+		sourceContentType: sourceContentType,
 		sendToFhir: params?.sendToFhirServer,
 		fhirServerUrlOverride: params.fhirServerUrlOverride,
 	});
 
-	reply.header('Content-Type', outputContentType);
-	await pipeline(outputStream, reply.raw);
+	reply.raw.setHeader('Content-Type', 'application/json');
+	reply.raw.write('{"success":true,"message":"ETL executado","data":[');
+
+	const processingErrors: any[] = [];
+	let firstDataItem = true;
+
+	const streamProcessor = new Writable({
+		write(chunk, encoding, callback) {
+			try {
+				const output = JSON.parse(chunk.toString());
+				if (output.type === 'data') {
+					if (!firstDataItem) {
+						reply.raw.write(',');
+					}
+					reply.raw.write(JSON.stringify(output.item));
+					firstDataItem = false;
+				} else if (output.type === 'error') {
+					processingErrors.push(output.error);
+				}
+				callback();
+			} catch (err) {
+				callback(err as Error);
+			}
+		},
+	});
+
+	try {
+		await pipeline(outputStream, streamProcessor);
+		reply.raw.write('],"errors":[');
+		for (let i = 0; i < processingErrors.length; i++) {
+			if (i > 0) {
+				reply.raw.write(',');
+			}
+			reply.raw.write(JSON.stringify(processingErrors[i]));
+		}
+		reply.raw.write(']}');
+	} catch (err) {
+		request.log.error('Error in pipeline processing for file request:', err);
+		if (!reply.raw.headersSent) {
+			reply.status(500).send({
+				success: false,
+				message: 'Stream processing error',
+				data: [],
+				errors: [err],
+			});
+		} else {
+			reply.raw.write(
+				'],"errors":[{"type":"PipelineError","message":"Stream processing error after data started"}]}',
+			);
+		}
+	} finally {
+		if (!reply.raw.writableEnded) {
+			reply.raw.end();
+		}
+	}
 }
