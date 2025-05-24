@@ -25,15 +25,24 @@ export class FhirResourceStream extends Readable {
 
 		try {
 			// Garante que a URL inicial seja válida e inclua _count e _format
+			// Corrige para garantir que o /fhir do base não seja ignorado
+			let initialPath = options.initialUrl;
+			if (initialPath.startsWith('/')) {
+				initialPath = initialPath.slice(1); // remove barra inicial
+			}
 			const initialUrlObj = new URL(
-				options.initialUrl,
+				initialPath,
 				this.fhirBaseUrl.endsWith('/')
 					? this.fhirBaseUrl
 					: `${this.fhirBaseUrl}/`,
 			);
+
+			console.log('initialUrlObj', initialUrlObj);
+
 			initialUrlObj.searchParams.set('_count', String(this.pageSize));
 			initialUrlObj.searchParams.set('_format', 'json');
 			this.nextPageUrl = initialUrlObj.toString();
+			console.log('this.nextPageUrl', this.nextPageUrl);
 		} catch (e: any) {
 			console.error(
 				`FhirResourceStream: Invalid initial URL provided: ${options.initialUrl}`,
@@ -116,6 +125,7 @@ export class FhirResourceStream extends Readable {
 		// console.log(`FhirResourceStream: Fetching page: ${urlToFetch}`);
 
 		try {
+			console.log('urlToFetch', urlToFetch);
 			const response = await axios.get(urlToFetch, {
 				headers: {
 					Accept: 'application/fhir+json',
