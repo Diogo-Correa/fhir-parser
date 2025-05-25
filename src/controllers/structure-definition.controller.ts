@@ -73,7 +73,7 @@ export async function handleProcessStructureDefinition(
 		);
 
 		if (result.success) {
-			reply.status(200).send(result);
+			return reply.status(200).send(result);
 		}
 		// O serviço retorna success: false para erros esperados (ex: not found)
 		request.log.warn(

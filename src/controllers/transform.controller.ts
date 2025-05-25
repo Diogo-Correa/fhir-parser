@@ -53,7 +53,7 @@ export async function handleTransformRequest(
 		fhirServerUrlOverride: fhirServerUrlOverride,
 	});
 
-	reply.raw.setHeader('Content-Type', 'application/json');
+	reply.raw.setHeader('Content-Type', 'application/fhir+json');
 	reply.raw.write('{"success":true,"message":"ETL executado","data":[');
 
 	const processingErrors: any[] = [];
