@@ -370,9 +370,9 @@ function createFhirTransformStream(
 						}
 					}
 
-					// Início da Lógica de Auto-População (Passo 2) ---
-					// Só executa se não houver erros do Passo 1 e se tivermos informações da SD.
 					if (itemErrors.length === 0 && COMPLETE_SD_ELEMENTS.length > 0) {
+						// Início da Lógica de Auto-População (Passo 2) ---
+						// Só executa se não houver erros do Passo 1 e se tivermos informações da SD.
 						const sdIdentifierAutoPop =
 							config.structureDefinitionUrl || config.fhirResourceType;
 						const sdInfoForAutoPopulationLoop =
@@ -423,9 +423,9 @@ function createFhirTransformStream(
 						}
 					}
 
-					// Checagem Final de Campos Obrigatórios (Passo 3) ---
-					// Só executa se não houver erros dos Passos 1 e 2 e se tivermos informações da SD.
 					if (itemErrors.length === 0 && COMPLETE_SD_ELEMENTS.length > 0) {
+						// Checagem Final de Campos Obrigatórios (Passo 3) ---
+						// Só executa se não houver erros dos Passos 1 e 2 e se tivermos informações da SD.
 						const sdIdentifierForFinalCheck =
 							config.structureDefinitionUrl || config.fhirResourceType;
 						const sdInfoForFinalCheck =
@@ -435,72 +435,68 @@ function createFhirTransformStream(
 
 						if (sdInfoForFinalCheck?.elements) {
 							for (const elementDef of sdInfoForFinalCheck.elements) {
-								const relativePath = elementDef.path.substring(
+								const fullPathFromSD = elementDef.path;
+								const relativePath = fullPathFromSD.substring(
 									config.fhirResourceType.length + 1,
 								);
-								if (
-									!relativePath ||
-									elementDef.path === config.fhirResourceType
-								)
+
+								if (!relativePath || fullPathFromSD === config.fhirResourceType)
 									continue;
 
-								let valueInOutput: any;
+								let checkThisField = true;
 								const pathParts = relativePath.split('.');
+
 								if (pathParts.length > 1) {
-									const potentialArrayPath = pathParts.slice(0, -1).join('.');
-									const propertyInArrayElement =
-										pathParts[pathParts.length - 1];
-									const arrayCandidate = getValue(
+									const parentInstancePath = pathParts.slice(0, -1).join('.');
+
+									const parentValueInOutput = getValue(
 										outputItem,
-										potentialArrayPath,
+										parentInstancePath,
 									);
+
 									if (
-										Array.isArray(arrayCandidate) &&
-										arrayCandidate.length > 0
+										parentValueInOutput === undefined ||
+										parentValueInOutput === null
 									) {
-										valueInOutput = getValue(
-											arrayCandidate[0],
-											propertyInArrayElement,
-										);
+										checkThisField = false;
 									} else if (
-										Array.isArray(arrayCandidate) &&
-										arrayCandidate.length === 0
+										Array.isArray(parentValueInOutput) &&
+										parentValueInOutput.length === 0
 									) {
-										valueInOutput = undefined;
-									} else {
-										valueInOutput = getValue(outputItem, relativePath);
+										checkThisField = false;
 									}
-								} else {
-									valueInOutput = getValue(outputItem, relativePath);
 								}
 
-								const isArrayActuallyEmpty =
-									Array.isArray(valueInOutput) && valueInOutput.length === 0;
+								if (checkThisField) {
+									const valueInOutput = getValue(outputItem, relativePath);
+									const isArrayActuallyEmpty =
+										Array.isArray(valueInOutput) && valueInOutput.length === 0;
 
-								if (
-									valueInOutput === undefined ||
-									valueInOutput === null ||
-									isArrayActuallyEmpty
-								) {
-									const basePathForErrorCheck = relativePath.split('[')[0];
 									if (
-										!itemErrors.some((e) =>
-											e.fieldTargetPath?.startsWith(basePathForErrorCheck),
-										)
+										valueInOutput === undefined ||
+										valueInOutput === null ||
+										isArrayActuallyEmpty
 									) {
-										itemErrors.push({
-											fieldSourcePath: 'N/A (FHIR Profile Post-check)',
-											fieldTargetPath: relativePath,
-											inputValue:
-												valueInOutput === undefined
-													? 'undefined'
-													: JSON.stringify(valueInOutput),
-											errorType: 'Validation',
-											message: `Mandatory FHIR element '${relativePath}' (min: ${elementDef.cardinalityMin}) is missing, null, or an empty array in the final resource.`,
-											details: {
-												rule: `cardinalityMin: ${elementDef.cardinalityMin}`,
-											},
-										});
+										const basePathForErrorCheck = relativePath.split('[')[0];
+										if (
+											!itemErrors.some((e) =>
+												e.fieldTargetPath?.startsWith(basePathForErrorCheck),
+											)
+										) {
+											itemErrors.push({
+												fieldSourcePath: 'N/A (FHIR Profile Post-check)',
+												fieldTargetPath: relativePath,
+												inputValue:
+													valueInOutput === undefined
+														? 'undefined'
+														: JSON.stringify(valueInOutput),
+												errorType: 'Validation',
+												message: `Mandatory FHIR element '${relativePath}' (min: ${elementDef.cardinalityMin}) is missing, null, or an empty array in the final resource.`,
+												details: {
+													rule: `cardinalityMin: ${elementDef.cardinalityMin}`,
+												},
+											});
+										}
 									}
 								}
 							}
