@@ -1,17 +1,46 @@
 version: "3.8"
 
 services:
-  postgres:
-    image: postgres:15
-    container_name: postgres_server
-    environment:
-      POSTGRES_USER: fhir-parser
-      POSTGRES_PASSWORD: tccuff123
-      POSTGRES_DB: fhir-parser
+  # postgres:
+  #   image: postgres:15
+  #   container_name: postgres_server
+  #   environment:
+  #     POSTGRES_USER: fhir-parser
+  #     POSTGRES_PASSWORD: tccuff123
+  #     POSTGRES_DB: fhir-parser
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  hapi-fhir-validator-api:
+    image: jtravan3/hapi-fhir-validator-api:latest
+    container_name: hapi-fhir-validator-api
     ports:
-      - "5432:5432"
+      - "5000:5000"
+  redis-master:
+    image: "bitnami/redis:latest"
+    ports:
+      - "6379:6379"
+    environment:
+      - REDIS_REPLICATION_MODE=master
+      - REDIS_PASSWORD=my_master_password
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - "redis_data:/bitnami"
+
+  redis-replica:
+    image: "bitnami/redis:latest"
+    ports:
+      - "6380:6379"
+    depends_on:
+      - redis-master
+    environment:
+      - REDIS_REPLICATION_MODE=slave
+      - REDIS_MASTER_HOST=redis-master
+      - REDIS_MASTER_PORT_NUMBER=6379
+      - REDIS_MASTER_PASSWORD=my_master_password
+      - ALLOW_EMPTY_PASSWORD=no
 
 volumes:
-  postgres_data:
+  # postgres_data:
+  validator_data:
+  redis_data: {} # Adicionado para persistência do redis-master

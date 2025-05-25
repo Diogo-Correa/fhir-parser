@@ -19,6 +19,11 @@ export function buildServer(): FastifyInstance {
 
 	app.register(sensible);
 	app.register(fastifyMultipart);
+	// app.register(require('@fastify/redis'), {
+	// 	host: 'localhost',
+	// 	port: 6379,
+	// 	password: 'my_master_password',
+	// });
 
 	app.setErrorHandler((error, _, reply) => {
 		if (error instanceof ZodError) {
