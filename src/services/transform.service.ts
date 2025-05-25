@@ -7,7 +7,7 @@ import {
 } from '@prisma/client';
 import _ from 'lodash';
 import { type Duplex, type Readable, Transform } from 'node:stream';
-import { getMappingConfigurationByName } from '../repositories/mapping/getMappingConfiguration';
+import { getMappingConfigurationByIdentifier } from '../repositories/mapping/getMappingConfiguration';
 import {
 	findElementsWithFixedOrDefaultValue,
 	findFirstMandatoryStructureDefinitionByUrlOrType,
@@ -42,7 +42,8 @@ export async function streamTransformData({
 	sendToFhir = false,
 	fhirServerUrlOverride,
 }: StreamTransformServiceParams): Promise<StreamTransformResult> {
-	const mappingConfig = await getMappingConfigurationByName(mappingConfigName);
+	const mappingConfig =
+		await getMappingConfigurationByIdentifier(mappingConfigName);
 
 	let initialStream: Readable;
 	let parserStream: Duplex | null = null;
@@ -52,14 +53,12 @@ export async function streamTransformData({
 
 	if (mappingConfig?.direction === Direction.TO_FHIR) {
 		if (!inputStream) {
-			// sourceContentType é verificado pelo controller agora
 			throw new InvalidInputDataError(
 				'Input stream is required for TO_FHIR direction when no inline data is provided.',
 			);
 		}
 		initialStream = inputStream;
 
-		// O controller define sourceContentType. O parser é escolhido com base nele.
 		if (sourceContentType?.includes('csv')) {
 			if (mappingConfig?.sourceType !== SourceType.CSV)
 				throw new InvalidInputDataError(
@@ -76,7 +75,6 @@ export async function streamTransformData({
 				);
 			parserStream = createJsonParserStream();
 		} else {
-			// Este caso pode não ser alcançado se o controller validar Content-Type antes
 			throw new InvalidInputDataError(
 				`Unsupported source Content-Type for TO_FHIR stream: ${sourceContentType}.`,
 			);
@@ -87,7 +85,6 @@ export async function streamTransformData({
 			sendToFhir,
 			fhirServerUrlOverride ?? undefined,
 		);
-		// Output is NDJSON because createFhirTransformStream emits {type:'data'/'error'} objects
 		outputSerializerStream = createNdjsonStringifyStream();
 		outputContentType = 'application/x-ndjson'; // Stream of JSON objects
 	} else if (mappingConfig?.direction === Direction.FROM_FHIR) {
@@ -106,17 +103,14 @@ export async function streamTransformData({
 			false,
 			undefined,
 		);
-		// Output is NDJSON because createFhirTransformStream emits {type:'data'/'error'} objects
-		// The controller will take this NDJSON stream and build the final JSON response.
 		outputSerializerStream = createNdjsonStringifyStream();
-		outputContentType = 'application/x-ndjson'; // Stream of JSON objects
+		outputContentType = 'application/x-ndjson';
 	} else {
 		throw new Error(
 			`Unsupported transformation direction in mapping '${mappingConfigName}': ${mappingConfig?.direction}`,
 		);
 	}
 
-	// Monta o Pipeline
 	const allProcessStreams: (Readable | Duplex | Transform)[] = [initialStream];
 	if (parserStream) {
 		allProcessStreams.push(parserStream);
@@ -124,15 +118,12 @@ export async function streamTransformData({
 	allProcessStreams.push(transformStreamInstance);
 	allProcessStreams.push(outputSerializerStream);
 
-	// Cria o pipeline manualmente e propaga erros para o stream final
 	let prevStream: Readable = initialStream;
 	for (let i = 1; i < allProcessStreams.length; i++) {
 		const currentStream = allProcessStreams[i];
-		// Propaga erros do stream anterior para o stream final
 		prevStream.on('error', (err) => {
 			allProcessStreams[allProcessStreams.length - 1].emit('error', err);
 		});
-		// Faz cast para Duplex | Transform, pois pipe retorna o próprio stream para esses casos
 		prevStream = prevStream.pipe(currentStream as NodeJS.WritableStream) as
 			| Duplex
 			| Transform;
