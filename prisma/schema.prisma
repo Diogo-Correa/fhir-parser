@@ -28,7 +28,7 @@ model MappingConfiguration {
 
 model FieldMapping {
   id                     String               @id @default(cuid())
-  sourcePath             String
+  sourcePath             String?
   targetFhirPath         String
   transformationType     TransformationType?
   transformationDetails  Json?
@@ -138,4 +138,5 @@ enum TransformationType {
   FORMAT_DATE
   PARSE_DATE
   CODE_LOOKUP
+  DEFAULT_VALUE
 }

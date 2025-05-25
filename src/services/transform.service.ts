@@ -208,10 +208,12 @@ function createFhirTransformStream(
 						const currentPathInTarget = mapping.targetFhirPath;
 						if (!currentPathInTarget) continue;
 
-						const valueFromSource =
-							currentPathInSource === '$ROOT'
-								? sourceItem
-								: getValue(sourceItem, currentPathInSource);
+						let valueFromSource: any;
+						if (currentPathInSource && currentPathInSource !== '$ROOT') {
+							valueFromSource = getValue(sourceItem, currentPathInSource);
+						} else if (currentPathInSource === '$ROOT') {
+							valueFromSource = sourceItem;
+						}
 						let valueToSet = valueFromSource;
 						let fieldErrorFound = false;
 

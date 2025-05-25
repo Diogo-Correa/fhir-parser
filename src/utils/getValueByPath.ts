@@ -71,7 +71,7 @@ function getDeepFhirPathValue(
 
 export function getValue<T>(
 	obj: Record<string, unknown> | any[] | undefined | null,
-	path: string,
+	path?: string | null,
 	defaultValue?: any,
 ): T | undefined {
 	if (obj === undefined || obj === null) {

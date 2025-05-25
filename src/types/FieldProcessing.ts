@@ -1,5 +1,5 @@
 export interface FieldProcessingError {
-	fieldSourcePath?: string; // Qual campo de origem falhou
+	fieldSourcePath?: string | null; // Qual campo de origem falhou
 	fieldTargetPath: string; // Qual campo de destino foi afetado
 	inputValue: any; // O valor que causou o erro
 	errorType: 'Validation' | 'Transformation'; // Tipo do erro

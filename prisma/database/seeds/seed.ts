@@ -6,7 +6,8 @@ async function main() {
 	console.log('Start seeding ...');
 
 	// URLs Canônicas (ajuste conforme necessário ou processe as SDs primeiro)
-	const brCorePatientUrl = 'http://localhost:8080/fhir/StructureDefinition/1';
+	const brCorePatientUrl =
+		'https://br-core.saude.gov.br/fhir/StructureDefinition/br-core-patient';
 	const observationBaseUrl =
 		'http://hl7.org/fhir/StructureDefinition/Observation';
 	const administrativeGenderVs =
@@ -143,8 +144,36 @@ async function main() {
 						targetFhirPath: 'telecom[0].value',
 					},
 					{
+						targetFhirPath: 'telecom[0].use',
+						transformationType: 'DEFAULT_VALUE',
+						transformationDetails: {
+							value: 'mobile',
+						},
+					},
+					{
+						targetFhirPath: 'telecom[0].system',
+						transformationType: 'DEFAULT_VALUE',
+						transformationDetails: {
+							value: 'phone',
+						},
+					},
+					{
 						sourcePath: 'contatos[1].email',
 						targetFhirPath: 'telecom[1].value',
+					},
+					{
+						targetFhirPath: 'telecom[1].use',
+						transformationType: 'DEFAULT_VALUE',
+						transformationDetails: {
+							value: 'home',
+						},
+					},
+					{
+						targetFhirPath: 'telecom[1].system',
+						transformationType: 'DEFAULT_VALUE',
+						transformationDetails: {
+							value: 'email',
+						},
 					},
 					// --- Extensão Raça/Cor (Exemplo - baseado no perfil BR) ---
 					// Supondo que br-core-patient define a extensão de raça/cor
@@ -159,11 +188,14 @@ async function main() {
 					},
 					// O system da raça/cor provavelmente é um fixedValue no perfil da extensão, então não mapearíamos.
 					// Se não fosse, seria:
-					// {
-					//   targetFhirPath: "extension[?url='http://www.saude.gov.br/fhir/r4/StructureDefinition/BRRacaCorEtnia-1.0'].extension[?url='race'].valueCodeableConcept.coding[0].system",
-					//   transformationType: "DEFAULT_VALUE",
-					//   transformationDetails: { value: "http://www.saude.gov.br/fhir/r4/CodeSystem/BRRacaCor" }
-					// }
+					{
+						targetFhirPath:
+							"extension[?url='http://www.saude.gov.br/fhir/r4/StructureDefinition/BRRacaCorEtnia-1.0'].extension[?url='race'].valueCodeableConcept.coding[0].system",
+						transformationType: 'DEFAULT_VALUE',
+						transformationDetails: {
+							value: 'http://www.saude.gov.br/fhir/r4/CodeSystem/BRRacaCor',
+						},
+					},
 				],
 			},
 		},
@@ -182,34 +214,34 @@ async function main() {
 			structureDefinitionUrl: observationBaseUrl,
 			fieldMappings: {
 				create: [
-					{ sourcePath: 'vitalSign.id', targetFhirPath: 'id' },
-					{ sourcePath: 'vitalSign.status', targetFhirPath: 'status' },
+					{ sourcePath: 'id', targetFhirPath: 'id' },
+					{ sourcePath: 'status', targetFhirPath: 'status' },
 					{
-						sourcePath: 'vitalSign.code',
+						sourcePath: 'code',
 						targetFhirPath: 'code.coding[0].code',
 					},
 					{
-						sourcePath: 'vitalSign.display',
+						sourcePath: 'display',
 						targetFhirPath: 'code.coding[0].display',
 					},
 					{
-						sourcePath: 'vitalSign.codeSystem',
+						sourcePath: 'codeSystem',
 						targetFhirPath: 'code.coding[0].system',
 					},
 					{
-						sourcePath: 'vitalSign.value',
+						sourcePath: 'value',
 						targetFhirPath: 'valueQuantity.value',
 					},
 					{
-						sourcePath: 'vitalSign.unit',
+						sourcePath: 'unit',
 						targetFhirPath: 'valueQuantity.unit',
 					},
 					{
-						sourcePath: 'vitalSign.valueSystem',
+						sourcePath: 'valueSystem',
 						targetFhirPath: 'valueQuantity.system',
 					},
 					{
-						sourcePath: 'vitalSign.effectiveDateTime',
+						sourcePath: 'effectiveDateTime',
 						targetFhirPath: 'effectiveDateTime',
 					},
 					{ sourcePath: 'patientId', targetFhirPath: 'subject.reference' },
