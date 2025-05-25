@@ -4,9 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "dev": "tsx --watch src/http/server.ts",
-    "build": "tsup src/http/server.ts",
-    "start": "node dist/http/server.js",
+    "dev": "tsx --watch src/http/cluster.ts",
+    "build": "tsup src",
+    "start": "node dist/http/cluster.js",
     "prisma:migrate": "pnpm exec prisma migrate dev",
     "prisma:seed": "tsx prisma/database/seeds/seed.ts",
     "prisma:generate": "pnpm exec prisma generate",

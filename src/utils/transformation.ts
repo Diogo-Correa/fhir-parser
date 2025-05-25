@@ -186,8 +186,3 @@ validationRegistry.set('REQUIRED', validateRequired);
 validationRegistry.set('REGEX', validateRegex);
 validationRegistry.set('MIN_LENGTH', validateMinLength);
 validationRegistry.set('VALUESET', validateValueSet);
-
-console.log(
-	`Registered ${transformationRegistry.size} transformation functions.`,
-);
-console.log(`Registered ${validationRegistry.size} validation functions.`);
