@@ -1,10 +1,10 @@
-import { Transform } from 'node:stream';
+import { type Duplex, Transform } from 'node:stream';
 import Papa from 'papaparse';
 import { parser } from 'stream-json';
 import { streamValues } from 'stream-json/streamers/StreamValues';
-import { InvalidInputDataError } from './transform.service';
+import { InvalidInputDataError } from './errors/InvalidInputDataError';
 
-export function createCsvParserStream(): Transform {
+export function createCsvParserStream(): Duplex {
 	return Papa.parse(Papa.NODE_STREAM_INPUT, {
 		header: true,
 		skipEmptyLines: true,
@@ -19,12 +19,21 @@ export function createJsonParserStream(): Transform {
 
 	const objectExtractor = new Transform({
 		objectMode: true,
-		transform({ key, value }, encoding, callback) {
+		transform({ key, value }, _, callback) {
 			this.push(value);
 			callback();
 		},
 	});
 	valueStream.pipe(objectExtractor);
+
+	// Evita múltiplos push(null) no combinedStream
+	let combinedStreamEnded = false;
+	function endCombinedStreamOnce() {
+		if (!combinedStreamEnded) {
+			combinedStreamEnded = true;
+			combinedStream.push(null);
+		}
+	}
 
 	const combinedStream = new Transform({
 		writableObjectMode: false,
@@ -47,7 +56,7 @@ export function createJsonParserStream(): Transform {
 			combinedStream.once('drain', () => objectExtractor.resume());
 		}
 	});
-	objectExtractor.on('end', () => combinedStream.push(null));
+	objectExtractor.on('end', endCombinedStreamOnce);
 	objectExtractor.on('error', (err) => combinedStream.emit('error', err));
 	jsonParser.on('error', (err) => combinedStream.emit('error', err));
 
@@ -59,16 +68,33 @@ export function createJsonParserStream(): Transform {
 export function createNdjsonStringifyStream(): Transform {
 	return new Transform({
 		objectMode: true,
-		writableHighWaterMark: 16, // Opcional: ajustar buffer
-		readableHighWaterMark: 16, // Opcional: ajustar buffer
+		writableHighWaterMark: 16,
+		readableHighWaterMark: 16,
 		transform(chunk, encoding, callback) {
 			try {
+				// Não filtra mais, apenas stringifica o que vier
 				this.push(`${JSON.stringify(chunk)}\n`);
 				callback();
 			} catch (error: any) {
-				callback(
-					new Error(`Failed to stringify object to NDJSON: ${error.message}`),
-				);
+				// Erro ao stringificar (raro, mas possível com refs circulares não tratadas)
+				console.error('[NdjsonStringify] Error stringifying chunk:', error);
+				// Tenta stringificar um erro substituto
+				try {
+					this.push(
+						`${JSON.stringify({
+							_isTransformError: true,
+							errors: [
+								{
+									message: `Failed to stringify original object: ${error.message}`,
+								},
+							],
+							originalItem: '[[Unstringifiable Object]]',
+						})}\n`,
+					);
+					callback();
+				} catch {
+					callback(error); // Falha total ao stringificar
+				}
 			}
 		},
 	});
@@ -83,14 +109,28 @@ export function createCsvStringifyStream(): Transform {
 		writableHighWaterMark: 16,
 		readableHighWaterMark: 16,
 		transform(chunk, encoding, callback) {
+			// Verifica se é um objeto de erro
+			if (chunk && chunk._isTransformError === true) {
+				console.error(
+					'[CsvStringify] Skipping item due to transformation errors:',
+					JSON.stringify(chunk.errors),
+				);
+				return callback(); // Descarta o erro e continua
+			}
+
+			// Processa o objeto de dados normalmente
 			try {
+				const dataObject = chunk; // Assume que chunk é o objeto de dados
+				if (!dataObject || typeof dataObject !== 'object') {
+					console.warn('[CsvStringify] Skipping non-object item:', dataObject);
+					return callback(); // Descarta item inválido
+				}
+
 				if (!headerWritten) {
-					// Força que o chunk seja um objeto plano para gerar o header
-					const flatChunk = flattenObject(chunk);
-					const csvString = Papa.unparse([flatChunk]);
+					const flatChunk = flattenObject(dataObject); // Achata para CSV
+					const csvString = Papa.unparse([flatChunk], { header: true }); // Força header na primeira vez
 					const lines = csvString.split('\n');
-					this.push(`${lines[0]}\n`); // Header
-					// Prepara o unparser para as próximas linhas (sem header e com as colunas do header)
+					this.push(`${lines[0]}\n`);
 					const headers = Papa.parse(lines[0], { header: false })
 						.data[0] as string[];
 					papaUnparser = (row: object) =>
@@ -98,13 +138,12 @@ export function createCsvStringifyStream(): Transform {
 							header: false,
 							columns: headers,
 						});
-					// Processa a primeira linha de dados (se existir)
 					if (lines[1] && lines[1].trim() !== '') {
 						this.push(`${lines[1].trim()}\n`);
 					}
 					headerWritten = true;
 				} else if (papaUnparser) {
-					const csvRow = papaUnparser(chunk).trim();
+					const csvRow = papaUnparser(dataObject).trim();
 					if (csvRow) {
 						this.push(`${csvRow}\n`);
 					}
@@ -115,9 +154,14 @@ export function createCsvStringifyStream(): Transform {
 				}
 				callback();
 			} catch (error: any) {
-				callback(
-					new Error(`Failed to stringify object to CSV: ${error.message}`),
+				console.error(
+					'[CsvStringify] Error processing item for CSV:',
+					error,
+					'Item:',
+					JSON.stringify(chunk).substring(0, 200),
 				);
+				// Não propaga o erro para não parar o stream, apenas loga
+				callback();
 			}
 		},
 		flush(callback) {

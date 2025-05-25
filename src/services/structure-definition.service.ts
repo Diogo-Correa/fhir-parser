@@ -1,6 +1,8 @@
 import type { Prisma } from '@prisma/client';
 import axios from 'axios';
-import { db } from '../lib/prisma';
+import { findManyStructureDefinitions } from '../repositories/structure-definitions/find-many';
+import { findUniqueStructureDefinitionByUrlOrType } from '../repositories/structure-definitions/find-unique-sd';
+import { fhirStructureDefinitionTransaction } from '../repositories/structure-definitions/transaction';
 import { FhirClientError } from './errors/FhirClientError';
 
 const DEFAULT_FHIR_SERVER_URL =
@@ -12,6 +14,22 @@ interface ProcessResult {
 	structureDefinitionId?: string;
 	elementCount?: number;
 	structureDefinitionUrl?: string;
+}
+
+export async function getAllStructureDefinitions() {
+	const structureDefinitions = await findManyStructureDefinitions();
+	return structureDefinitions;
+}
+
+export async function getStructureDefinitionByUrlOrType(
+	url?: string | null,
+	type?: string | null,
+) {
+	const structureDefinition = await findUniqueStructureDefinitionByUrlOrType(
+		url,
+		type,
+	);
+	return structureDefinition;
 }
 
 export async function processAndStoreStructureDefinition(
@@ -26,7 +44,7 @@ export async function processAndStoreStructureDefinition(
 		// Tenta buscar por ID ou URL canônica
 		if (identifier.includes('/')) {
 			// Heurística: Se tem /, provavelmente é URL ou tipo/id
-			if (identifier.startsWith('http')) {
+			if (identifier.startsWith('https') || identifier.startsWith('http')) {
 				// URL Canônica
 				fetchUrl = `${serverUrl}/StructureDefinition?url=${encodeURIComponent(identifier)}`;
 			} else {
@@ -101,9 +119,12 @@ export async function processAndStoreStructureDefinition(
 			description: structureDefinition.description,
 		};
 
-		const elementsData: Prisma.FhirElementDefinitionCreateManyInput[] = [];
-		elements.forEach((element: any) => {
-			if (!element.path) return;
+		const elementsData: Omit<
+			Prisma.FhirElementDefinitionCreateManyInput,
+			'structureDefinitionId'
+		>[] = [];
+		for (const element of elements) {
+			if (!element.path) continue;
 			let fixedValue: string | null = null;
 			let fixedValueType: string | null = null;
 			let defaultValue: string | null = null;
@@ -144,31 +165,15 @@ export async function processAndStoreStructureDefinition(
 				defaultValue: defaultValue,
 				defaultValueType: defaultValueType?.toLowerCase(),
 			});
-		});
+		}
 
 		// Transação no DB
 		try {
-			const savedStructureDefinition = await db.$transaction(async (tx) => {
-				const upsertedSd = await tx.fhirStructureDefinition.upsert({
-					where: { url: sdData.url },
-					update: { ...sdData, processedAt: new Date() }, // Atualiza data de processamento
-					create: sdData,
-				});
-				await tx.fhirElementDefinition.deleteMany({
-					where: { structureDefinitionId: upsertedSd.id },
-				});
-				if (elementsData.length > 0) {
-					const elementsToCreate = elementsData.map((el) => ({
-						...el,
-						structureDefinitionId: upsertedSd.id,
-					}));
-					await tx.fhirElementDefinition.createMany({
-						data: elementsToCreate,
-						skipDuplicates: true, // Ignora duplicatas silenciosamente se @@unique falhar por algum motivo
-					});
-				}
-				return upsertedSd;
-			});
+			const savedStructureDefinition = await fhirStructureDefinitionTransaction(
+				sdData.url,
+				sdData,
+				elementsData,
+			);
 
 			console.log(
 				`StructureDefinition ${savedStructureDefinition.url} and ${elementsData.length} elements stored.`,
@@ -196,14 +201,14 @@ export async function processAndStoreStructureDefinition(
 			errorMessage = error.message; // Já formatado
 		} else if (axios.isAxiosError(error)) {
 			const status = error.response?.status;
-			errorMessage += ` Status: ${status}.`;
+			`${errorMessage} Status: ${status}.`;
 			if (status === 404) {
-				errorMessage += ' Resource not found.';
+				`${errorMessage} Resource not found.`;
 			} else {
-				errorMessage += ` Response: ${JSON.stringify(error.response?.data)}`;
+				`${errorMessage} Response: ${JSON.stringify(error.response?.data)}`;
 			}
 		} else {
-			errorMessage += ` Error: ${error.message}`;
+			`${errorMessage} Error: ${error.message}`;
 		}
 		console.error(errorMessage);
 		// Retorna falha, mas não lança erro para o controller necessariamente
