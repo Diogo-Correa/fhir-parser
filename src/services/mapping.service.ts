@@ -169,11 +169,10 @@ export async function createMappingConfigService(
 	const existingByName = await getMappingConfigurationByIdentifier(
 		mappingConfigData.name,
 	);
-	if (existingByName) {
+	if (existingByName)
 		throw new Error(
 			`MappingConfiguration with name '${mappingConfigData.name}' already exists.`,
 		);
-	}
 
 	const fieldMappingsForValidation = fieldMappings.map((fm) => ({
 		targetFhirPath: fm.targetFhirPath,
