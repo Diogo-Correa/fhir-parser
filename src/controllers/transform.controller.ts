@@ -1,147 +1,212 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { z } from 'zod';
 import {
-	type TransformApiParams,
-	transformApiSchema,
-} from '../schemas/transform.schema';
-import { FhirClientError } from '../services/errors/FhirClientError';
-import { InvalidInputDataError } from '../services/errors/InvalidInputDataError';
-import { InvalidMappingError } from '../services/errors/InvalidMappingError';
-import { MappingConfigurationNotFoundError } from '../services/errors/MappingConfigurationNotFoundError';
-import { StructureDefinitionNotProcessedError } from '../services/errors/StructureDefinitionNotProcessedError';
+	type TransformBodyParams,
+	type TransformFileParams,
+	transformFileSchema,
+} from '../schemas/transform.schema'; // Certifique-se que este schema agora tem 'data' como array opcional
+
+import { Readable, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { MultipartRequestError } from '../services/errors/MultipartRequestError';
 import { streamTransformData } from '../services/transform.service';
-interface TransformRequestFullParams {
-	Body?: Partial<TransformApiParams>;
-	Querystring?: Partial<TransformApiParams>;
-}
 
 export async function handleTransformRequest(
-	request: FastifyRequest<TransformRequestFullParams>,
+	request: FastifyRequest<{ Body: TransformBodyParams }>,
 	reply: FastifyReply,
 ) {
-	const contentType = request.headers['content-type'] || '';
-	const queryParams = request.query || {};
-	// Só parseia body se for JSON (Fastify pode já ter feito)
-	const bodyParams =
-		contentType.includes('json') &&
-		typeof request.body === 'object' &&
-		request.body !== null
-			? request.body
-			: {};
+	const {
+		data,
+		mappingConfigName,
+		fhirQueryPath,
+		fhirServerUrlOverride,
+		sendToFhirServer,
+	} = request.body;
+	let inputStream: Readable | undefined;
+	let sourceContentType: string | undefined = request.headers['content-type'];
 
-	// Consolida parâmetros (Query tem precedência)
-	const params: Partial<TransformApiParams> = {
-		mappingConfigName:
-			queryParams.mappingConfigName || bodyParams.mappingConfigName,
-		sendToFhirServer:
-			typeof queryParams.sendToFhirServer === 'string'
-				? queryParams.sendToFhirServer.toLowerCase() === 'true'
-				: (bodyParams.sendToFhirServer ?? false),
-		fhirServerUrlOverride:
-			queryParams.fhirServerUrlOverride || bodyParams.fhirServerUrlOverride,
-		fhirQueryPath: queryParams.fhirQueryPath || bodyParams.fhirQueryPath,
-	};
-
-	// Valida parâmetros consolidados com Zod
-	try {
-		transformApiSchema.parse(params);
-	} catch (error) {
-		if (error instanceof z.ZodError) {
-			return reply.status(400).send({
-				message: 'Invalid request parameters',
-				errors: error.flatten().fieldErrors,
-			});
-		}
-		request.log.error(error, 'Unexpected error validating request parameters');
-		return reply
-			.status(500)
-			.send({ message: 'Error validating request parameters.' });
+	if (data) {
+		const ndJsonDataString = data
+			.map((item) => JSON.stringify(item))
+			.join('\n');
+		inputStream = Readable.from(ndJsonDataString);
+		sourceContentType = 'application/x-ndjson';
+	} else if (fhirQueryPath) {
+		request.log.info('JSON request with "fhirQueryPath" for transformation.');
+		inputStream = undefined;
+	} else {
+		request.log.warn(
+			'JSON request for TO_FHIR missing "data" field, and not a FROM_FHIR request.',
+		);
+		reply.status(400).send({
+			message:
+				'JSON request for TO_FHIR must contain "data" field (as an array of objects), or "fhirQueryPath" for FROM_FHIR.',
+		});
+		return;
 	}
 
-	// Chama o Serviço de Stream
+	const { outputStream } = await streamTransformData({
+		mappingConfigName: mappingConfigName,
+		inputStream: inputStream,
+		fhirQueryPath: fhirQueryPath,
+		sourceContentType: sourceContentType,
+		sendToFhir: sendToFhirServer,
+		fhirServerUrlOverride: fhirServerUrlOverride,
+	});
+
+	reply.raw.setHeader('Content-Type', 'application/fhir+json');
+	reply.raw.write('{"success":true,"message":"ETL executado","data":[');
+
+	const processingErrors: any[] = [];
+	let firstDataItem = true;
+
+	const streamProcessor = new Writable({
+		write(chunk, encoding, callback) {
+			try {
+				const output = JSON.parse(chunk.toString());
+				if (output.type === 'data') {
+					if (!firstDataItem) {
+						reply.raw.write(',');
+					}
+					reply.raw.write(JSON.stringify(output.item));
+					firstDataItem = false;
+				} else if (output.type === 'error') {
+					processingErrors.push(output.error);
+				}
+				callback();
+			} catch (err) {
+				callback(err as Error);
+			}
+		},
+	});
+
 	try {
-		const isSupportedInputStream =
-			contentType.includes('csv') ||
-			contentType.includes('json') ||
-			contentType.includes('ndjson');
-
-		const { outputStream, outputContentType } = await streamTransformData({
-			mappingConfigName: params.mappingConfigName!, // Zod garante que existe
-			inputStream: isSupportedInputStream ? request.raw : undefined,
-			sourceContentType: isSupportedInputStream ? contentType : undefined,
-			fhirQueryPath: params.fhirQueryPath,
-			sendToFhir: params.sendToFhirServer,
-			fhirServerUrlOverride: params.fhirServerUrlOverride,
-		});
-
-		// Envia Resposta Stream
-		reply.header('Content-Type', outputContentType);
-		return reply.send(outputStream);
-	} catch (error: any) {
-		// Tratamento Centralizado de Erros Conhecidos
-		if (error instanceof MappingConfigurationNotFoundError) {
-			return reply.status(404).send({ message: error.message });
+		await pipeline(outputStream, streamProcessor);
+		reply.raw.write('],"errors":[');
+		for (let i = 0; i < processingErrors.length; i++) {
+			if (i > 0) {
+				reply.raw.write(',');
+			}
+			reply.raw.write(JSON.stringify(processingErrors[i]));
 		}
-		if (error instanceof StructureDefinitionNotProcessedError) {
-			request.log.warn(
-				`StructureDefinition Error for mapping '${params.mappingConfigName}': ${error.message}`,
-			);
-			return reply
-				.status(400)
-				.send({ message: error.message, code: 'STRUCTURE_DEFINITION_MISSING' });
-		}
-		if (error instanceof InvalidMappingError) {
-			request.log.error(
-				`Invalid Mapping Error for '${error.mappingName}': Path '${error.invalidPath}' on SD '${error.structureDefinitionUrl}'`,
-			);
-			return reply.status(400).send({
-				message: error.message,
-				code: 'INVALID_MAPPING_PATH',
-				details: {
-					path: error.invalidPath,
-					mapping: error.mappingName,
-					sd: error.structureDefinitionUrl,
-				},
+		reply.raw.write(']}');
+	} catch (err) {
+		request.log.error('Error in pipeline processing for JSON request:', err);
+		if (!reply.raw.headersSent) {
+			reply.status(500).send({
+				success: false,
+				message: 'Stream processing error',
+				data: [],
+				errors: [err],
 			});
-		}
-		if (error instanceof InvalidInputDataError) {
-			return reply
-				.status(400)
-				.send({ message: error.message, code: 'INVALID_INPUT' });
-		}
-		if (error instanceof FhirClientError) {
-			// Erro ao buscar dados FHIR (FROM_FHIR) ou ao enviar (TO_FHIR async)
-			// O envio TO_FHIR async não lança erro aqui, apenas loga no serviço.
-			// Este erro é mais provável no fetch do FROM_FHIR.
-			request.log.error(
-				`FHIR Client Error during FROM_FHIR fetch for query '${params.fhirQueryPath}': ${error.message}`,
+		} else {
+			reply.raw.write(
+				'],"errors":[{"type":"PipelineError","message":"Stream processing error after data started"}]}',
 			);
-			// Retorna 502 Bad Gateway se falhou ao buscar do servidor upstream
-			return reply.status(502).send({
-				message: `Failed to fetch data from FHIR server: ${error.message}`,
-				code: 'FHIR_FETCH_FAILED',
-				details: error.responseData,
-			});
 		}
+	} finally {
+		if (!reply.raw.writableEnded) {
+			reply.raw.end();
+		}
+	}
+}
 
-		// Erro genérico/inesperado
-		request.log.error(
-			error,
-			`Unexpected error during stream transformation for mapping '${params.mappingConfigName}'`,
+export async function handleTransformByFile(
+	request: FastifyRequest<{ Body: TransformFileParams }>,
+	reply: FastifyReply,
+) {
+	let sourceContentType: string | undefined = request.headers['content-type'];
+
+	if (!request.isMultipart())
+		throw new MultipartRequestError(
+			'Invalid request. Expected multipart/form-data.',
 		);
 
-		if (reply.raw.writableEnded) {
-			console.error(
-				'Error occurred after response stream started - cannot send error response.',
-			);
-			// Apenas tenta logar
-			return;
+	const filePart = await request.file({});
+
+	if (!filePart?.file)
+		throw new MultipartRequestError('File part is missing in the request.');
+
+	const getFieldValue = (field: any) => {
+		if (Array.isArray(field)) {
+			return field[0]?.value;
 		}
-		// Retorna 500 para erros não tratados
-		return reply.status(500).send({
-			message:
-				'An unexpected internal error occurred during data transformation.',
-			code: 'INTERNAL_SERVER_ERROR',
-		});
+		return field?.value;
+	};
+
+	const params: TransformFileParams = {
+		mappingConfigName: getFieldValue(filePart.fields.mappingConfigName),
+		sendToFhirServer: getFieldValue(filePart.fields.sendToFhirServer),
+		fhirServerUrlOverride: getFieldValue(filePart.fields.fhirServerUrlOverride),
+		file: filePart.file,
+	};
+
+	transformFileSchema.parse(params);
+
+	const inputStream = filePart.file;
+	sourceContentType = filePart.mimetype;
+
+	const { outputStream } = await streamTransformData({
+		mappingConfigName: params.mappingConfigName,
+		inputStream: inputStream,
+		fhirQueryPath: params.fhirQueryPath,
+		sourceContentType: sourceContentType,
+		sendToFhir: params?.sendToFhirServer,
+		fhirServerUrlOverride: params.fhirServerUrlOverride,
+	});
+
+	reply.raw.setHeader('Content-Type', 'application/json');
+	reply.raw.write('{"success":true,"message":"ETL executado","data":[');
+
+	const processingErrors: any[] = [];
+	let firstDataItem = true;
+
+	const streamProcessor = new Writable({
+		write(chunk, encoding, callback) {
+			try {
+				const output = JSON.parse(chunk.toString());
+				if (output.type === 'data') {
+					if (!firstDataItem) {
+						reply.raw.write(',');
+					}
+					reply.raw.write(JSON.stringify(output.item));
+					firstDataItem = false;
+				} else if (output.type === 'error') {
+					processingErrors.push(output.error);
+				}
+				callback();
+			} catch (err) {
+				callback(err as Error);
+			}
+		},
+	});
+
+	try {
+		await pipeline(outputStream, streamProcessor);
+		reply.raw.write('],"errors":[');
+		for (let i = 0; i < processingErrors.length; i++) {
+			if (i > 0) {
+				reply.raw.write(',');
+			}
+			reply.raw.write(JSON.stringify(processingErrors[i]));
+		}
+		reply.raw.write(']}');
+	} catch (err) {
+		request.log.error('Error in pipeline processing for file request:', err);
+		if (!reply.raw.headersSent) {
+			reply.status(500).send({
+				success: false,
+				message: 'Stream processing error',
+				data: [],
+				errors: [err],
+			});
+		} else {
+			reply.raw.write(
+				'],"errors":[{"type":"PipelineError","message":"Stream processing error after data started"}]}',
+			);
+		}
+	} finally {
+		if (!reply.raw.writableEnded) {
+			reply.raw.end();
+		}
 	}
 }

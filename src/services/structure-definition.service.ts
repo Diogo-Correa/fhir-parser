@@ -1,5 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import axios from 'axios';
+import { findManyStructureDefinitions } from '../repositories/structure-definitions/find-many';
+import { findUniqueStructureDefinitionByUrlOrType } from '../repositories/structure-definitions/find-unique-sd';
 import { fhirStructureDefinitionTransaction } from '../repositories/structure-definitions/transaction';
 import { FhirClientError } from './errors/FhirClientError';
 
@@ -14,6 +16,22 @@ interface ProcessResult {
 	structureDefinitionUrl?: string;
 }
 
+export async function getAllStructureDefinitions() {
+	const structureDefinitions = await findManyStructureDefinitions();
+	return structureDefinitions;
+}
+
+export async function getStructureDefinitionByUrlOrType(
+	url?: string | null,
+	type?: string | null,
+) {
+	const structureDefinition = await findUniqueStructureDefinitionByUrlOrType(
+		url,
+		type,
+	);
+	return structureDefinition;
+}
+
 export async function processAndStoreStructureDefinition(
 	identifier: string,
 	fhirServerUrl?: string,
@@ -26,7 +44,7 @@ export async function processAndStoreStructureDefinition(
 		// Tenta buscar por ID ou URL canônica
 		if (identifier.includes('/')) {
 			// Heurística: Se tem /, provavelmente é URL ou tipo/id
-			if (identifier.startsWith('http')) {
+			if (identifier.startsWith('https') || identifier.startsWith('http')) {
 				// URL Canônica
 				fetchUrl = `${serverUrl}/StructureDefinition?url=${encodeURIComponent(identifier)}`;
 			} else {
