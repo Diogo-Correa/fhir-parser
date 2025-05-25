@@ -34,7 +34,7 @@ type ElementDefinitionForValidation = Pick<
 	| 'dataTypes'
 >;
 
-async function validateMappingAgainstStructureDefinition(
+export async function validateMappingAgainstStructureDefinition(
 	mappingName: string,
 	fhirResourceType: string,
 	structureDefinitionUrl: string | null | undefined,
