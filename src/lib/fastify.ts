@@ -11,6 +11,7 @@ import { MappingConfigurationNotFoundError } from '../services/errors/MappingCon
 import { MultipartRequestError } from '../services/errors/MultipartRequestError';
 import { StructureDefinitionNotProcessedError } from '../services/errors/StructureDefinitionNotProcessedError';
 import '../utils/transformation';
+import { swagger } from './swagger';
 
 export function buildServer(): FastifyInstance {
 	const app = Fastify({
@@ -19,11 +20,6 @@ export function buildServer(): FastifyInstance {
 
 	app.register(sensible);
 	app.register(fastifyMultipart);
-	// app.register(require('@fastify/redis'), {
-	// 	host: 'localhost',
-	// 	port: 6379,
-	// 	password: 'my_master_password',
-	// });
 
 	app.setErrorHandler((error, _, reply) => {
 		if (error instanceof ZodError) {
@@ -83,7 +79,28 @@ export function buildServer(): FastifyInstance {
 	});
 
 	for (const schema of schemas) app.addSchema(schema);
+	app.register(require('@fastify/swagger'), swagger);
 	app.register(appRoutes, { prefix: '/api/v1' });
+
+	app.register(require('@scalar/fastify-api-reference'), {
+		routePrefix: process.env.DOCS_PREFIX || '/docs',
+		configuration: {
+			title: 'FHIR Parser - Docs',
+			theme: 'elysiajs',
+			hideModels: true,
+			darkMode: true,
+			forceDarkModeState: 'dark',
+			hideDarkModeToggle: true,
+			defaultHttpClient: {
+				targetKey: 'node',
+				clientKey: 'fetch',
+			},
+			metaData: {
+				title: 'FHIR Parser - Docs',
+				description: 'Documentação',
+			},
+		},
+	});
 
 	return app;
 }
