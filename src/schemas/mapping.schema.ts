@@ -94,6 +94,19 @@ const mappingConfigurationSummaryResponseSchema =
 		updatedAt: z.string().datetime(),
 	});
 
+const validationResultResponseSchema = z.object({
+	success: z.boolean(),
+	message: z.string(),
+	issues: z
+		.array(
+			z.object({
+				path: z.string().optional(),
+				message: z.string(),
+			}),
+		)
+		.optional(),
+});
+
 export const { schemas: mappingSchemas, $ref } = buildJsonSchemas(
 	{
 		createMappingConfigurationSchema,
@@ -102,6 +115,7 @@ export const { schemas: mappingSchemas, $ref } = buildJsonSchemas(
 		fieldMappingSchema,
 		mappingConfigurationResponseSchema,
 		mappingConfigurationSummaryResponseSchema,
+		validationResultResponseSchema,
 	},
 	{ $id: 'mappingSchemas' },
 );

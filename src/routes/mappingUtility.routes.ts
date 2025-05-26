@@ -13,8 +13,29 @@ export async function mappingUtilityRoutes(app: FastifyInstance) {
 			schema: {
 				tags: ['Mapping Utilities'],
 				summary: 'Get available transformation types',
+				description:
+					'Retrieves a list of all supported transformation types that can be used in field mappings.',
 				response: {
-					200: $ref('stringListResponseSchema'),
+					200: {
+						description: 'A list of transformation type names.',
+						content: {
+							'application/json': { schema: $ref('stringListResponseSchema') },
+						},
+					},
+					500: {
+						description: 'Internal server error.',
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										success: { type: 'boolean' },
+										message: { type: 'string' },
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -27,8 +48,29 @@ export async function mappingUtilityRoutes(app: FastifyInstance) {
 			schema: {
 				tags: ['Mapping Utilities'],
 				summary: 'Get available validation types',
+				description:
+					'Retrieves a list of all supported validation types that can be used in field mappings.',
 				response: {
-					200: $ref('stringListResponseSchema'),
+					200: {
+						description: 'A list of validation type names.',
+						content: {
+							'application/json': { schema: $ref('stringListResponseSchema') },
+						},
+					},
+					500: {
+						description: 'Internal server error.',
+						content: {
+							'application/json': {
+								schema: {
+									type: 'object',
+									properties: {
+										success: { type: 'boolean' },
+										message: { type: 'string' },
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
@@ -41,10 +83,34 @@ export async function mappingUtilityRoutes(app: FastifyInstance) {
 			schema: {
 				tags: ['Mapping Utilities'],
 				summary: 'Validate a mapping configuration payload (dry run)',
+				description:
+					'Submits a mapping configuration payload for validation against its specified StructureDefinition without saving it. Returns a success or failure message, including details of any validation issues.',
 				body: $ref('validateMappingConfigurationDryRunSchema'),
 				response: {
-					200: $ref('validationResultResponseSchema'),
-					400: $ref('validationResultResponseSchema'),
+					200: {
+						description: 'The mapping configuration payload is valid.',
+						content: {
+							'application/json': {
+								schema: $ref('validationResultResponseSchema'),
+							},
+						},
+					},
+					400: {
+						description: 'The mapping configuration payload is invalid.',
+						content: {
+							'application/json': {
+								schema: $ref('validationResultResponseSchema'),
+							},
+						},
+					},
+					500: {
+						description: 'Internal server error during validation process.',
+						content: {
+							'application/json': {
+								schema: $ref('validationResultResponseSchema'),
+							},
+						},
+					},
 				},
 			},
 		},

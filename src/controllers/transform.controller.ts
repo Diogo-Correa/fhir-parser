@@ -299,6 +299,7 @@ export async function handleTransformByFile(
 					chunk.toString(),
 				);
 				processingErrors.push({
+					success: false,
 					type: 'ChunkParseError',
 					message: (err as Error).message,
 					chunk: `${chunk.toString().substring(0, 100)}...`,

@@ -15,7 +15,6 @@ import {
 } from '../repositories/structure-definitions/find-unique-sd';
 import type { FieldProcessingError } from '../types/FieldProcessing';
 import type {
-	StreamItemError,
 	StreamTransformResult,
 	StreamTransformServiceParams,
 } from '../types/StreamTransform';
@@ -556,9 +555,11 @@ function createFhirTransformStream(
 					this.push({
 						type: 'error',
 						error: {
+							type: 'StreamItemError',
 							errors: itemErrors,
 							originalItem: sourceItem,
-						} as StreamItemError,
+							_isTransformError: true,
+						},
 					});
 				} else if (finalItemToPush) {
 					if (
@@ -583,16 +584,18 @@ function createFhirTransformStream(
 				this.push({
 					type: 'error',
 					error: {
+						type: 'StreamProcessingError',
+						message: `Unexpected system error during item transformation: ${errMessage}`,
+						originalItem: sourceItem,
 						errors: [
 							{
 								fieldTargetPath: 'N/A (System Error)',
-								inputValue: sourceItem,
+								inputValue: `${String(sourceItem).substring(0, 200)}...`,
 								errorType: 'Transformation',
 								message: `Unexpected system error: ${errMessage}`,
 							},
 						],
-						originalItem: sourceItem,
-					} as StreamItemError,
+					} as any,
 				});
 				callback();
 			}
