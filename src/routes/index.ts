@@ -28,7 +28,7 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
 	app.register(mappingUtilityRoutes, { prefix: '/mapping-utilities' });
 
 	app.get(
-		'/health',
+		'/',
 		{
 			schema: {
 				tags: ['Health'],
