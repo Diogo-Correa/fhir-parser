@@ -16,6 +16,7 @@ import { swagger } from './swagger';
 export function buildServer(): FastifyInstance {
 	const app = Fastify({
 		logger: true,
+		bodyLimit: 30 * 1024 * 1024,
 	});
 
 	app.register(sensible);
@@ -60,6 +61,16 @@ export function buildServer(): FastifyInstance {
 			return reply
 				.status(502)
 				.send({ statusCode: 502, success: false, message: error.message });
+		}
+
+		if (error.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
+			app.log.warn(`Request body too large: ${error.message}`);
+			return reply.status(413).send({
+				statusCode: 413,
+				success: false,
+				message: 'Payload too large. Please send a smaller request body.',
+				code: error.code,
+			});
 		}
 
 		if (error instanceof StructureDefinitionNotProcessedError) {

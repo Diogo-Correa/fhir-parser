@@ -4,4 +4,4 @@ node_modules
 dist
 dist_k6
 
-output.txt
+output.*

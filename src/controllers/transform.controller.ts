@@ -12,6 +12,7 @@ import { DEFAULT_CACHE_TTL, redis } from '../lib/redis';
 import { MultipartRequestError } from '../services/errors/MultipartRequestError';
 import { streamTransformData } from '../services/transform.service';
 import { generateCacheKey } from '../utils/cacheKeyGenerator';
+import { normalizeDataArrayForCache } from '../utils/normalizeObjectForCacheKey';
 
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
@@ -40,7 +41,8 @@ export async function handleTransformRequest(
 	let cachePrefix: string;
 
 	if (data) {
-		const dataString = JSON.stringify(data);
+		const normalizedData = normalizeDataArrayForCache(data);
+		const dataString = JSON.stringify(normalizedData);
 		inputDataHash = crypto
 			.createHash('sha256')
 			.update(dataString)
