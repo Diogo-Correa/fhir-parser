@@ -70,9 +70,6 @@ export function validateValue(
 				// TODO: Implementar busca no cache local ou chamada à API $validate-code
 				const isValidCode = true; // <<-- SUBSTITUIR PELA LÓGICA REAL
 				const valueSetUrl = details.valueSetUrl;
-				console.warn(
-					`[Validation] VALUESET validation for code '${value}' against '${valueSetUrl}' is NOT YET IMPLEMENTED. Assuming valid for now.`,
-				);
 				if (!isValidCode) {
 					// A força ('required', 'extensible', etc.) poderia influenciar se isso é um erro hard ou warning
 					return `Value '${value}' is not valid according to ValueSet '${valueSetUrl}'.`;

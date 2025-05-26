@@ -167,9 +167,6 @@ const validateValueSet: ValidationFunction = (value, details) => {
 	if (!details?.valueSetUrl)
 		return 'Configuration error: Missing ValueSet URL.';
 	if (value === null || value === undefined) return null;
-	console.warn(
-		`[Validation] VALUESET validation for code '${value}' against '${details.valueSetUrl}' is NOT YET IMPLEMENTED.`,
-	);
 	// TODO: Implementar lógica real de validação (cache ou $validate-code)
 	return null;
 };

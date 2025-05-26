@@ -1,4 +1,5 @@
 import fastifyMultipart from '@fastify/multipart';
+import fastifyRateLimit from '@fastify/rate-limit';
 import sensible from '@fastify/sensible';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
@@ -17,6 +18,21 @@ export function buildServer(): FastifyInstance {
 	const app = Fastify({
 		logger: true,
 		bodyLimit: 30 * 1024 * 1024,
+	});
+
+	app.register(fastifyRateLimit, {
+		max: 100,
+		timeWindow: '1 minute',
+		ban: 2,
+		addHeaders: {
+			'x-ratelimit-limit': true,
+			'x-ratelimit-remaining': true,
+			'x-ratelimit-reset': true,
+		},
+		addHeadersOnExceeding: {
+			'x-ratelimit-limit': true,
+			'x-ratelimit-remaining': true,
+		},
 	});
 
 	app.register(sensible);
@@ -61,6 +77,44 @@ export function buildServer(): FastifyInstance {
 			return reply
 				.status(502)
 				.send({ statusCode: 502, success: false, message: error.message });
+		}
+
+		if (
+			error.statusCode === 429 ||
+			(error.statusCode === 403 &&
+				error.message?.includes('Rate limit exceeded'))
+		) {
+			const responsePayload: {
+				statusCode: number;
+				success: boolean;
+				error: string;
+				message: string;
+				retryAfter?: number;
+			} = {
+				statusCode: error.statusCode,
+				success: false,
+				error: error.statusCode === 429 ? 'Too Many Requests' : 'Forbidden',
+				message:
+					error.message ||
+					(error.statusCode === 429
+						? 'You have exceeded the request limit.'
+						: 'Access denied due to rate limiting.'),
+			};
+
+			if (error.headers && typeof error.headers === 'object') {
+				reply.headers(
+					error.headers as Record<string, string | number | string[]>,
+				);
+			}
+
+			if (typeof error.retryAfter === 'number') {
+				reply.header('Retry-After', error.retryAfter);
+				responsePayload.retryAfter = error.retryAfter;
+			} else {
+				reply.header('Retry-After', 60);
+			}
+
+			return reply.status(error.statusCode).send(responsePayload);
 		}
 
 		if (error.code === 'FST_ERR_CTP_BODY_TOO_LARGE') {
