@@ -1028,7 +1028,6 @@ packages:
     cpu: [x64]
     os: [win32]
 
-<<<<<<<<< Temporary merge branch 1
   '@scalar/core@0.3.1':
     resolution: {integrity: sha512-k5TsihZcSdVnqE6JrRFdsvePDTe2RxjE+1wHdcnyFdIPief+ZdPn2fxCTlN0ozLoe08xlY3N9DHzDaneMpX58Q==}
     engines: {node: '>=20'}
