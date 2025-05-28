@@ -1,22 +1,36 @@
-version: "3.8"
-
 services:
-  # postgres:
-  #   image: postgres:15
-  #   container_name: postgres_server
-  #   environment:
-  #     POSTGRES_USER: fhir-parser
-  #     POSTGRES_PASSWORD: tccuff123
-  #     POSTGRES_DB: fhir-parser
-  #   ports:
-  #     - "5432:5432"
-  #   volumes:
-  #     - postgres_data:/var/lib/postgresql/data
-  hapi-fhir-validator-api:
-    image: jtravan3/hapi-fhir-validator-api:latest
-    container_name: hapi-fhir-validator-api
+  postgres:
+    image: postgres:15
+    container_name: postgres_server
+    environment:
+      POSTGRES_USER: fhir-parser
+      POSTGRES_PASSWORD: tccuff123
+      POSTGRES_DB: fhir-parser
     ports:
-      - "5000:5000"
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+  hapi-fhir:
+    image: hapiproject/hapi:latest
+    container_name: hapi-fhir
+    ports:
+      - "8080:8080"
+    environment:
+      - hapi.datasource.url=jdbc:postgresql://postgres_server:5432/fhir-parser
+      - hapi.datasource.username=fhir-parser
+      - hapi.datasource.password=tccuff123
+      - hapi.datasource.driver=org.postgresql.Driver
+      - spring.jpa.database-platform=org.hibernate.dialect.PostgreSQLDialect
+      - spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+      - spring.datasource.url=jdbc:postgresql://postgres_server:5432/fhir-parser
+      - spring.datasource.username=fhir-parser
+      - spring.datasource.password=tccuff123
+      - spring.datasource.driver-class-name=org.postgresql.Driver
+    depends_on:
+      - postgres
+    volumes:
+      - hapi_fhir_data:/app/hapi_fhirdb
+
   redis-master:
     image: "bitnami/redis:latest"
     ports:
@@ -41,6 +55,6 @@ services:
       - ALLOW_EMPTY_PASSWORD=no
 
 volumes:
-  # postgres_data:
-  validator_data:
-  redis_data: {} # Adicionado para persistência do redis-master
+  postgres_data:
+  hapi_fhir_data: {}
+  redis_data: {}
