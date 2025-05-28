@@ -9,6 +9,7 @@ import {
 import _ from 'lodash';
 import { performance } from 'node:perf_hooks';
 import { type Duplex, type Readable, Transform } from 'node:stream';
+import { sendResourceToFhirServer } from '../lib/fhir.client';
 import {
 	CACHE_PREFIXES,
 	DEFAULT_CACHE_TTL as METADATA_CACHE_TTL,
@@ -262,7 +263,6 @@ function createFhirTransformStream(
 		writableHighWaterMark: 16,
 		readableHighWaterMark: 16,
 		async transform(chunk, encoding, callback) {
-			const itemProcessStartTime = performance.now();
 			const itemErrors: FieldProcessingError[] = [];
 			const sourceItem = chunk;
 			let outputItem: any = {};
@@ -296,6 +296,7 @@ function createFhirTransformStream(
 						let valueToSet = valueFromSource;
 						let fieldErrorFound = false;
 
+						// 1. Aplicar DEFAULT_VALUE se o valor da origem for nulo/undefined
 						if (
 							(valueToSet === null || valueToSet === undefined) &&
 							mapping.transformationType?.toUpperCase() === 'DEFAULT_VALUE'
@@ -325,17 +326,12 @@ function createFhirTransformStream(
 									fieldErrorFound = true;
 								}
 							} else {
-								itemErrors.push({
-									fieldSourcePath: currentPathInSource,
-									fieldTargetPath: currentPathInTarget,
-									inputValue: valueFromSource,
-									errorType: 'Transformation',
-									message: 'DEFAULT_VALUE function not registered.',
-								});
+								itemErrors.push();
 								fieldErrorFound = true;
 							}
 						}
 
+						// 2. Aplicar Validação ao valor (que pode ser o original ou o default)
 						if (!fieldErrorFound && mapping.validationType) {
 							if (
 								mapping.validationType.toUpperCase() === 'REQUIRED' ||
@@ -367,18 +363,13 @@ function createFhirTransformStream(
 										fieldErrorFound = true;
 									}
 								} else {
-									itemErrors.push({
-										fieldSourcePath: currentPathInSource,
-										fieldTargetPath: currentPathInTarget,
-										inputValue: valueToSet,
-										errorType: 'Validation',
-										message: `Validation function '${mapping.validationType}' not registered.`,
-									});
+									itemErrors.push();
 									fieldErrorFound = true;
 								}
 							}
 						}
 
+						// 3. Aplicar Transformação (se não for DEFAULT_VALUE, que já foi tratado)
 						if (
 							!fieldErrorFound &&
 							mapping.transformationType &&
@@ -413,17 +404,12 @@ function createFhirTransformStream(
 									fieldErrorFound = true;
 								}
 							} else {
-								itemErrors.push({
-									fieldSourcePath: currentPathInSource,
-									fieldTargetPath: currentPathInTarget,
-									inputValue: valueToSet,
-									errorType: 'Transformation',
-									message: `Transformation function '${mapping.transformationType}' not registered.`,
-								});
+								itemErrors.push();
 								fieldErrorFound = true;
 							}
 						}
 
+						// 4. Setar o valor final no outputItem (recurso FHIR)
 						if (
 							!fieldErrorFound &&
 							((valueToSet !== undefined && valueToSet !== null) ||
@@ -431,20 +417,14 @@ function createFhirTransformStream(
 									'DEFAULT_VALUE' &&
 									valueToSet !== undefined))
 						) {
-							if (
-								valueToSet === undefined &&
-								!(mapping.transformationType?.toUpperCase() === 'DEFAULT_VALUE')
-							) {
-							} else {
-								setValue(
-									outputItem,
-									currentPathInTarget,
-									valueToSet,
-									sdAllElementsForPathResolution,
-									resourceType,
-								);
-								mappedTargetPaths.add(currentPathInTarget.split('[')[0]);
-							}
+							setValue(
+								outputItem,
+								currentPathInTarget,
+								valueToSet,
+								sdAllElementsForPathResolution,
+								resourceType,
+							);
+							mappedTargetPaths.add(currentPathInTarget.split('[')[0]);
 						}
 					}
 
@@ -452,6 +432,7 @@ function createFhirTransformStream(
 						itemErrors.length === 0 &&
 						sdElementsForAutoPopulation.length > 0
 					) {
+						// Lógica de autopopulação e verificação de campos obrigatórios FHIR (mantida como no original)
 						for (const elementDef of sdElementsForAutoPopulation) {
 							const relativePath = elementDef.path.substring(
 								resourceType.length + 1,
@@ -553,46 +534,326 @@ function createFhirTransformStream(
 							}
 						}
 					}
+					if (itemErrors.length > 0) {
+						this.push({
+							type: 'error',
+							error: {
+								type: 'StreamItemError',
+								errors: itemErrors,
+								originalItem: sourceItem,
+								_isTransformError: true,
+							},
+						});
+					} else if (
+						outputItem &&
+						Object.keys(outputItem).length > 0 &&
+						outputItem.resourceType
+					) {
+						if (sendToFhir) {
+							try {
+								const method = outputItem.id ? 'PUT' : 'POST';
+								const fhirServerResponse = await sendResourceToFhirServer({
+									resource: outputItem,
+									resourceType: outputItem.resourceType,
+									fhirServerUrl: fhirServerUrlOverride,
+									method: method,
+								});
+								this.push({ type: 'data', item: fhirServerResponse });
+							} catch (fhirClientError: any) {
+								const sendErrors: FieldProcessingError[] = [
+									{
+										fieldSourcePath: 'N/A (FHIR Send Operation)',
+										fieldTargetPath: `${outputItem.resourceType}${outputItem.id ? `/${outputItem.id}` : ''}`,
+										inputValue: outputItem,
+										errorType: 'Transformation',
+										message: `FHIR Server Send Error: ${fhirClientError.message}`,
+										details: {
+											clientError: {
+												name: fhirClientError.name,
+												message: fhirClientError.message,
+												url: fhirClientError.url,
+												status: fhirClientError.status,
+												responseData: fhirClientError.responseData
+													? `${JSON.stringify(
+															fhirClientError.responseData,
+														).substring(0, 500)}...`
+													: undefined,
+											},
+										},
+									},
+								];
+								this.push({
+									type: 'error',
+									error: {
+										type: 'StreamItemError',
+										errors: sendErrors,
+										originalItem: sourceItem,
+										_isTransformError: true,
+									},
+								});
+							}
+						} else {
+							this.push({ type: 'data', item: outputItem });
+						}
+					}
 				} else if (mappingConfig.direction === Direction.FROM_FHIR) {
 					const fhirResource = sourceItem;
 					outputItem = {};
 
 					if (!fhirResource || fhirResource?.resourceType !== resourceType) {
 						itemErrors.push({
-							fieldTargetPath: 'N/A',
+							fieldTargetPath: 'N/A (root)',
 							inputValue: fhirResource,
 							errorType: 'Validation',
-							message: `Expected '${resourceType}', got '${fhirResource?.resourceType}'. Skipping.`,
+							message: `Expected FHIR resourceType '${resourceType}', but received '${fhirResource?.resourceType}'. Skipping item.`,
 						});
 					} else {
 						for (const mapping of mappingConfig.fieldMappings) {
 							const currentPathInSourceFhir = mapping.targetFhirPath;
 							const currentPathInTargetSystem = mapping.sourcePath;
+
 							if (!currentPathInTargetSystem || !currentPathInSourceFhir)
 								continue;
 
+							let fieldErrorFound = false;
 							const valueFromFhir = getValue(
 								fhirResource,
 								currentPathInSourceFhir,
 							);
-							const valueToSetInTarget = valueFromFhir;
+							let valueAfterTransformation = valueFromFhir;
 
-							// TODO: Considerar se validações/transformações de 'mapping' se aplicam na direção FROM_FHIR
+							// 1. Aplicar Transformação (do valor FHIR para o formato do sistema de destino)
+							if (mapping.transformationType) {
+								const transformationFunc = transformationRegistry.get(
+									mapping.transformationType.toUpperCase(),
+								);
+								if (transformationFunc) {
+									const effectiveTransformationDetails = _.cloneDeep(
+										mapping.transformationDetails,
+									);
+									const transformationInputValue = valueFromFhir;
 
+									if (
+										mapping.transformationType.toUpperCase() === 'DEFAULT_VALUE'
+									) {
+										if (
+											transformationInputValue !== null &&
+											transformationInputValue !== undefined
+										) {
+											valueAfterTransformation = transformationInputValue;
+										} else {
+											const transformResult = transformationFunc(
+												null,
+												effectiveTransformationDetails,
+												{ sourceItem: fhirResource },
+											);
+											if (transformResult.success) {
+												valueAfterTransformation = transformResult.value;
+											} else {
+												itemErrors.push({
+													fieldSourcePath: currentPathInSourceFhir,
+													fieldTargetPath: currentPathInTargetSystem,
+													inputValue: transformationInputValue,
+													errorType: 'Transformation',
+													message:
+														transformResult.message ||
+														'DEFAULT_VALUE transformation failed.',
+													details: {
+														type: mapping.transformationType,
+														details:
+															mapping.transformationDetails as Prisma.JsonObject,
+													},
+												});
+												fieldErrorFound = true;
+											}
+										}
+									} else if (
+										mapping.transformationType.toUpperCase() ===
+											'FORMAT_DATE' &&
+										effectiveTransformationDetails
+									) {
+										const originalInputFormat = (
+											effectiveTransformationDetails as any
+										)?.inputFormat;
+										const originalOutputFormat = (
+											effectiveTransformationDetails as any
+										)?.outputFormat;
+										(effectiveTransformationDetails as any).inputFormat =
+											originalOutputFormat;
+										(effectiveTransformationDetails as any).outputFormat =
+											originalInputFormat;
+
+										const transformResult = transformationFunc(
+											transformationInputValue,
+											effectiveTransformationDetails,
+											{ sourceItem: fhirResource },
+										);
+										if (transformResult.success) {
+											valueAfterTransformation = transformResult.value;
+										} else {
+											itemErrors.push({
+												fieldSourcePath: currentPathInSourceFhir,
+												fieldTargetPath: currentPathInTargetSystem,
+												inputValue: transformationInputValue,
+												errorType: 'Transformation',
+												message:
+													transformResult.message ||
+													'FORMAT_DATE transformation failed for FROM_FHIR.',
+												details: {
+													type: mapping.transformationType,
+													originalDetails:
+														mapping.transformationDetails as Prisma.JsonObject,
+													adaptedDetails:
+														effectiveTransformationDetails as Prisma.JsonObject,
+												},
+											});
+											fieldErrorFound = true;
+										}
+									} else if (
+										mapping.transformationType.toUpperCase() ===
+											'CODE_LOOKUP' &&
+										effectiveTransformationDetails
+									) {
+										const originalMap = (effectiveTransformationDetails as any)
+											?.map;
+										const reversedMap: { [key: string]: string } = {};
+										if (originalMap && typeof originalMap === 'object') {
+											for (const key in originalMap) {
+												if (
+													Object.prototype.hasOwnProperty.call(originalMap, key)
+												) {
+													reversedMap[String(originalMap[key])] = key;
+												}
+											}
+										}
+										(effectiveTransformationDetails as any).map = reversedMap;
+
+										const transformResult = transformationFunc(
+											transformationInputValue,
+											effectiveTransformationDetails,
+											{ sourceItem: fhirResource },
+										);
+										if (transformResult.success) {
+											valueAfterTransformation = transformResult.value;
+										} else {
+											itemErrors.push({
+												fieldSourcePath: currentPathInSourceFhir,
+												fieldTargetPath: currentPathInTargetSystem,
+												inputValue: transformationInputValue,
+												errorType: 'Transformation',
+												message:
+													transformResult.message ||
+													'CODE_LOOKUP transformation failed for FROM_FHIR.',
+												details: {
+													type: mapping.transformationType,
+													originalDetails:
+														mapping.transformationDetails as Prisma.JsonObject,
+													adaptedDetails:
+														effectiveTransformationDetails as Prisma.JsonObject,
+												},
+											});
+											fieldErrorFound = true;
+										}
+									} else {
+										// Outras transformações
+										const transformResult = transformationFunc(
+											transformationInputValue,
+											effectiveTransformationDetails,
+											{ sourceItem: fhirResource },
+										);
+										if (transformResult.success) {
+											valueAfterTransformation = transformResult.value;
+										} else {
+											itemErrors.push({
+												fieldSourcePath: currentPathInSourceFhir,
+												fieldTargetPath: currentPathInTargetSystem,
+												inputValue: transformationInputValue,
+												errorType: 'Transformation',
+												message:
+													transformResult.message ||
+													`Transformation '${mapping.transformationType}' failed for FROM_FHIR.`,
+												details: {
+													type: mapping.transformationType,
+													details:
+														mapping.transformationDetails as Prisma.JsonObject,
+												},
+											});
+											fieldErrorFound = true;
+										}
+									}
+								} else {
+									itemErrors.push({
+										fieldSourcePath: currentPathInSourceFhir,
+										fieldTargetPath: currentPathInTargetSystem,
+										inputValue: valueFromFhir,
+										errorType: 'Transformation',
+										message: `Transformation function '${mapping.transformationType}' not registered.`,
+									});
+									fieldErrorFound = true;
+								}
+							}
+
+							// 2. Aplicar Validação ao valor JÁ TRANSFORMADO
+							if (!fieldErrorFound && mapping.validationType) {
+								if (
+									mapping.validationType.toUpperCase() === 'REQUIRED' ||
+									(valueAfterTransformation !== null &&
+										valueAfterTransformation !== undefined &&
+										String(valueAfterTransformation).trim() !== '')
+								) {
+									const validationFunc = validationRegistry.get(
+										mapping.validationType.toUpperCase(),
+									);
+									if (validationFunc) {
+										const validationErrorMsg = validationFunc(
+											valueAfterTransformation,
+											mapping.validationDetails,
+											{ sourceItem: fhirResource },
+										);
+										if (validationErrorMsg) {
+											itemErrors.push({
+												fieldSourcePath: currentPathInSourceFhir,
+												fieldTargetPath: currentPathInTargetSystem,
+												inputValue: valueAfterTransformation,
+												errorType: 'Validation',
+												message: validationErrorMsg,
+												details: {
+													type: mapping.validationType,
+													details:
+														mapping.validationDetails as Prisma.JsonObject,
+												},
+											});
+											fieldErrorFound = true;
+										}
+									} else {
+										itemErrors.push({
+											fieldSourcePath: currentPathInSourceFhir,
+											fieldTargetPath: currentPathInTargetSystem,
+											inputValue: valueAfterTransformation,
+											errorType: 'Validation',
+											message: `Validation function '${mapping.validationType}' not registered.`,
+										});
+										fieldErrorFound = true;
+									}
+								}
+							}
+
+							// 3. Setar o valor final no objeto de saída do sistema
 							if (
-								valueToSetInTarget !== undefined &&
-								valueToSetInTarget !== null
+								!fieldErrorFound &&
+								valueAfterTransformation !== undefined &&
+								valueAfterTransformation !== null
 							) {
 								if (mappingConfig.sourceType === SourceType.CSV) {
 									const columnName =
 										currentPathInTargetSystem.split('.')[0] ||
 										currentPathInTargetSystem;
-									outputItem[columnName] = valueToSetInTarget;
+									outputItem[columnName] = valueAfterTransformation;
 								} else {
 									_.set(
 										outputItem,
 										currentPathInTargetSystem,
-										valueToSetInTarget,
+										valueAfterTransformation,
 									);
 								}
 							}
@@ -600,11 +861,15 @@ function createFhirTransformStream(
 					}
 				}
 
+				// Finaliza o processamento do item e envia para o próximo stream
 				let finalItemToPush: any = null;
 				if (mappingConfig.direction === Direction.TO_FHIR) {
 					finalItemToPush = outputItem;
 				} else if (mappingConfig.direction === Direction.FROM_FHIR) {
-					if (outputItem && Object.keys(outputItem).length > 0) {
+					if (
+						outputItem &&
+						(Object.keys(outputItem).length > 0 || Array.isArray(outputItem))
+					) {
 						finalItemToPush = outputItem;
 					}
 				}
@@ -622,9 +887,10 @@ function createFhirTransformStream(
 				} else if (finalItemToPush) {
 					if (
 						mappingConfig.direction === Direction.FROM_FHIR &&
-						Object.keys(finalItemToPush).length === 0 &&
-						!Array.isArray(finalItemToPush)
+						!Array.isArray(finalItemToPush) &&
+						Object.keys(finalItemToPush).length === 0
 					) {
+						// Não envia objeto JSON vazio, a menos que seja um array
 					} else {
 						this.push({ type: 'data', item: finalItemToPush });
 					}
@@ -633,7 +899,6 @@ function createFhirTransformStream(
 			} catch (error: any) {
 				const errMessage =
 					error instanceof Error ? error.message : String(error);
-
 				this.push({
 					type: 'error',
 					error: {

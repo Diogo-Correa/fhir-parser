@@ -29,7 +29,8 @@ export const transformBodySchema = z.object({
 				description: 'Objeto JSON de entrada para ser transformado.',
 			}),
 		)
-		.min(1, { message: 'A lista de dados não pode estar vazia.' }),
+		.min(1, { message: 'A lista de dados não pode estar vazia.' })
+		.optional(),
 });
 
 export const transformFileSchema = z.object({
@@ -116,7 +117,7 @@ const individualErrorSchema = z.union([
 ]);
 
 export const transformResponseSchema = z.object({
-	success: z.boolean(),
+	success: z.boolean().optional(),
 	message: z.string(),
 	data: z
 		.array(z.record(z.unknown()))

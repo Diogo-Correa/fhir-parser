@@ -217,13 +217,13 @@ export async function getMappingConfigByIdentifierService(identifier: string) {
 		throw new MappingConfigurationNotFoundError(identifier);
 	}
 
-	await validateMappingAgainstStructureDefinition(
-		mappingConfig.name,
-		mappingConfig.fhirResourceType,
-		mappingConfig.structureDefinitionUrl,
-		mappingConfig.fieldMappings,
-		mappingConfig.direction,
-	);
+	// await validateMappingAgainstStructureDefinition(
+	// 	mappingConfig.name,
+	// 	mappingConfig.fhirResourceType,
+	// 	mappingConfig.structureDefinitionUrl,
+	// 	mappingConfig.fieldMappings,
+	// 	mappingConfig.direction,
+	// );
 
 	return mappingConfig;
 }

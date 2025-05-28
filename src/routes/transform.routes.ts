@@ -26,9 +26,6 @@ export async function transformRoutes(app: FastifyInstance) {
 					400: {
 						description:
 							'Bad request, such as invalid input data, invalid mapping configuration, or other client-side errors.',
-						content: {
-							'application/json': { schema: $ref('transformResponseSchema') },
-						},
 					},
 					404: {
 						description: 'Mapping configuration not found.',

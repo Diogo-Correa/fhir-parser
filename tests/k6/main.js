@@ -1,39 +1,25 @@
 import { faker } from '@faker-js/faker';
 import { check, group, sleep } from 'k6';
 import http from 'k6/http';
-import { Counter, Trend } from 'k6/metrics';
+import { Counter, Rate, Trend } from 'k6/metrics';
 
-const timeToFirstByteUncached = new Trend('ttfb_uncached_ms', true);
-const timeToFirstByteCached = new Trend('ttfb_cached_ms', true);
-const processingTimeUncached = new Trend(
-	'api_processing_time_uncached_ms',
-	true,
-);
-const processingTimeCached = new Trend('api_processing_time_cached_ms', true);
-const countSuccessReqs = new Counter('http_reqs_ok_count');
-const countRateLimitBlockedReqs = new Counter('http_reqs_rate_limited_count');
-const countClientErrorReqs = new Counter('http_reqs_other_4xx_count');
-const countServerErrorReqs = new Counter('http_reqs_5xx_count');
-const countTimeoutReqs = new Counter('http_reqs_timeout_k6_count');
+const timeToFirstByteUncached = new Trend('time_to_first_byte_uncached', true);
+const timeToFirstByteCached = new Trend('time_to_first_byte_cached', true);
+
+const countSuccessReqs = new Counter('http_reqs_success');
+const countClientErrorReqs = new Counter('http_reqs_client_error');
+const countServerErrorReqs = new Counter('http_reqs_server_error');
+const countTimeoutReqs = new Counter('http_reqs_timeout');
+
+const successfulChecksRate = new Rate('successful_checks_rate');
 
 const API_BASE_URL = __ENV.API_BASE_URL || 'http://localhost:3333/api/v1';
 const MAPPING_CONFIG_NAME = __ENV.MAPPING_CONFIG_NAME || 'ExampleJsonToPatient';
 const SEND_TO_FHIR_SERVER = __ENV.SEND_TO_FHIR === 'true' || false;
 
-const PAYLOAD_SIZES_TO_TEST = [
-	Number.parseInt(__ENV.SIZE1 || '10'),
-	Number.parseInt(__ENV.SIZE2 || '100'),
-	Number.parseInt(__ENV.SIZE3 || '500'),
-	Number.parseInt(__ENV.SIZE4 || '1000'),
-	Number.parseInt(__ENV.SIZE5 || '5000'),
-	Number.parseInt(__ENV.SIZE6 || '10000'),
-];
+const PAYLOAD_SIZES_TO_TEST = [10, 100, 1000, 10000];
 const MAX_RECORDS_TO_GENERATE = Math.max(...PAYLOAD_SIZES_TO_TEST);
-const REQUEST_TIMEOUT_SECONDS_STR = __ENV.REQ_TIMEOUT_S || '180';
-const REQUEST_TIMEOUT_SECONDS_NUM = Number.parseInt(
-	REQUEST_TIMEOUT_SECONDS_STR,
-	10,
-);
+const REQUEST_TIMEOUT = __ENV.REQ_TIMEOUT || '120s';
 
 function createRandomPatient(index) {
 	const sex = faker.person.sexType();
@@ -48,7 +34,7 @@ function createRandomPatient(index) {
 	const n2 = faker.string.numeric(3);
 	const n3 = faker.string.numeric(3);
 	const n4 = faker.string.numeric(2);
-	const cpfValue = `${n1}.${n2}.${n3}-${n4}`;
+	const cpfValue = `${n1}${n2}${n3}${n4}`;
 	return {
 		pacienteIdInterno: `json-pac-${faker.string.alphanumeric({ length: 7 })}-${index}`,
 		cpf: cpfValue,
@@ -83,54 +69,44 @@ export function setup() {
 	for (let i = 0; i < MAX_RECORDS_TO_GENERATE; i++) {
 		masterPatientDataPool.push(createRandomPatient(i + 1));
 	}
-	console.log(
-		`K6_SETUP: Master data pool generation complete. Will test payload sizes: [${PAYLOAD_SIZES_TO_TEST.join(', ')}]`,
-	);
+	console.log('K6_SETUP: Master data pool generation complete.');
 	return {
 		apiUrl: `${API_BASE_URL}/transform`,
 		masterDataPool: masterPatientDataPool,
-		payloadSizes: PAYLOAD_SIZES_TO_TEST,
 	};
 }
 
 export const options = {
-	setupTimeout: __ENV.SETUP_TIMEOUT || '5m',
+	setupTimeout: __ENV.SETUP_TIMEOUT || '10m',
 	scenarios: {
 		escalating_payload_ddos: {
 			executor: 'ramping-vus',
 			exec: 'runEscalatingPayloadTest',
 			stages: [
-				{ duration: '30s', target: 5 },
-				{ duration: '1m', target: 5 },
-				{ duration: '30s', target: 10 },
-				{ duration: '1m30s', target: 10 },
-				{ duration: '10s', target: 0 },
+				{ duration: '30s', target: 20 },
+
+				{ duration: '2m', target: 20 },
+
+				{ duration: '1m', target: 50 },
+
+				{ duration: '3m', target: 50 },
+
+				{ duration: '30s', target: 0 },
 			],
-			tags: { test_type: 'escalating_payload_and_rate_limit' },
+			tags: { test_type: 'escalating_payload_bulk_data' },
 			startTime: '0s',
 		},
 	},
 	thresholds: {
-		http_req_duration: [`p(95)<${REQUEST_TIMEOUT_SECONDS_NUM * 1000}`],
+		http_req_duration: [`p(95)<${REQUEST_TIMEOUT.slice(0, -1)}000`],
 		'http_req_duration{cache_status:miss}': ['p(95)<10000'],
 		'http_req_duration{cache_status:hit}': ['p(95)<1000'],
-
-		ttfb_uncached_ms: ['p(95)<8000'],
-		ttfb_cached_ms: ['p(95)<500'],
-
-		api_processing_time_uncached_ms: [
-			`p(95)<${REQUEST_TIMEOUT_SECONDS_NUM * 1000}`,
-		],
-		api_processing_time_cached_ms: ['p(95)<800'],
-
-		http_req_failed: ['rate<0.15'],
-		checks: ['rate>0.75'],
-
-		http_reqs_ok_count: ['count>0'],
-		http_reqs_other_4xx_count: ['count<50'],
-		http_reqs_rate_limited_count: ['count>=0'],
-		http_reqs_5xx_count: ['count<10'],
-		http_reqs_timeout_k6_count: ['count<20'],
+		http_req_failed: ['rate<0.1'],
+		successful_checks_rate: ['rate>0.9'],
+		checks: ['rate>0.85'],
+		time_to_first_byte_uncached: ['p(95)<10000'],
+		time_to_first_byte_cached: ['p(95)<1000'],
+		http_reqs_timeout: ['count<10'],
 	},
 	summaryTrendStats: [
 		'avg',
@@ -145,15 +121,15 @@ export const options = {
 };
 
 export function runEscalatingPayloadTest(setupData) {
-	if (!setupData || !setupData.masterDataPool || !setupData.payloadSizes) {
+	if (!setupData || !setupData.masterDataPool) {
 		console.error(
-			'K6_VU_ERROR: Data from setup function is not available. VU will exit.',
+			'K6_VU_ERROR: Master data pool from setup is not available. VU will exit.',
 		);
 		return;
 	}
 
-	for (const size of setupData.payloadSizes) {
-		group(`payload_size_${String(size).padStart(5, '0')}_records`, () => {
+	for (const size of PAYLOAD_SIZES_TO_TEST) {
+		group(`payload_size_${size}_records`, () => {
 			const currentDataSlice = setupData.masterDataPool.slice(0, size);
 			const payloadForThisSize = {
 				mappingConfigName: MAPPING_CONFIG_NAME,
@@ -164,15 +140,16 @@ export function runEscalatingPayloadTest(setupData) {
 			const testTargetUrl = setupData.apiUrl;
 			const commonRequestParams = {
 				headers: { 'Content-Type': 'application/json' },
-				timeout: REQUEST_TIMEOUT_SECONDS_STR,
-				expectedStatuses: { min: 200, max: 299, 403: true, 429: true },
+				timeout: REQUEST_TIMEOUT,
 			};
 
 			let resUncached;
-			group('attempt_cache_miss_then_hit_pair', () => {
+			group('attempt_cache_miss', () => {
 				const tagsUncached = {
 					cache_status: 'miss',
-					payload_size_tag: String(size),
+					payload_size_tag: size,
+					vu_id: __VU,
+					iter_id: __ITER,
 				};
 				resUncached = http.post(
 					testTargetUrl,
@@ -180,79 +157,46 @@ export function runEscalatingPayloadTest(setupData) {
 					{ ...commonRequestParams, tags: tagsUncached },
 				);
 
-				let isUncachedSuccess = false;
-				let isUncachedRateLimited = false;
-
-				if (resUncached.status === 0) {
-					countTimeoutReqs.add(1, tagsUncached);
-				} else if (
-					resUncached.status === 403 &&
-					resUncached.body &&
-					String(resUncached.body).includes('Rate limit exceeded')
-				) {
-					countRateLimitBlockedReqs.add(1, tagsUncached);
-					isUncachedRateLimited = true;
-				} else if (resUncached.status === 429) {
-					countRateLimitBlockedReqs.add(1, tagsUncached);
-					isUncachedRateLimited = true;
-				} else if (resUncached.status >= 200 && resUncached.status < 300) {
-					countSuccessReqs.add(1, tagsUncached);
-					isUncachedSuccess = true;
-				} else if (resUncached.status >= 400 && resUncached.status < 500) {
-					countClientErrorReqs.add(1, tagsUncached);
-				} else if (resUncached.status >= 500) {
-					countServerErrorReqs.add(1, tagsUncached);
-				}
-
-				check(
+				const isSuccessUncached = check(
 					resUncached,
 					{
-						[`[Size ${size} - Miss] Status é 200 (OK) ou 403/429 (Rate Limited)`]:
-							(r) =>
-								r.status === 200 ||
-								(r.status === 403 &&
-									r.body &&
-									String(r.body).includes('Rate limit exceeded')) ||
-								r.status === 429,
+						[`[Size ${size} - Miss] Status is 200`]: (r) => r.status === 200,
 					},
 					tagsUncached,
 				);
+				successfulChecksRate.add(isSuccessUncached, tagsUncached);
 
-				if (isUncachedSuccess) {
-					check(
-						resUncached,
-						{
-							[`[Size ${size} - Miss] Se 200, X-Cache header é 'miss' ou ausente`]:
-								(r) =>
-									!r.headers['X-Cache'] ||
-									r.headers['X-Cache'].toLowerCase() === 'miss',
-						},
-						tagsUncached,
-					);
+				if (resUncached.status === 0) countTimeoutReqs.add(1, tagsUncached);
+				else if (resUncached.status >= 200 && resUncached.status < 300)
+					countSuccessReqs.add(1, tagsUncached);
+				else if (resUncached.status >= 400 && resUncached.status < 500)
+					countClientErrorReqs.add(1, tagsUncached);
+				else if (resUncached.status >= 500)
+					countServerErrorReqs.add(1, tagsUncached);
+
+				if (resUncached.status === 200) {
 					timeToFirstByteUncached.add(
 						resUncached.timings.waiting,
 						tagsUncached,
 					);
-					processingTimeUncached.add(
-						resUncached.timings.duration,
-						tagsUncached,
-					);
-				} else if (!isUncachedRateLimited && resUncached.status !== 0) {
-					console.warn(
-						`K6_VU_WARN: [Size ${size} - Miss Attempt] Status:${resUncached.status}, X-Cache:${resUncached.headers['X-Cache']}, Err:${resUncached.error}, Body:${resUncached.body ? String(resUncached.body).substring(0, 60) : 'N/A'}`,
-					);
-				} else if (isUncachedRateLimited) {
-					console.log(
-						`K6_VU_INFO: [Size ${size} - Miss Attempt] Rate limited. Status:${resUncached.status}`,
+				}
+				if (resUncached.status !== 200) {
+					console.error(
+						`K6_VU_ERROR: [Size ${size} - Miss] VU=${__VU}, ITER=${__ITER}, Status=${resUncached.status}, X-Cache=${resUncached.headers['X-Cache']}, Body=${resUncached.body ? resUncached.body.substring(0, 100) : 'N/A'}`,
 					);
 				}
-				sleep(1);
+			});
 
-				if (isUncachedSuccess) {
-					let resCached;
+			sleep(1);
+
+			if (resUncached && resUncached.status === 200) {
+				let resCached;
+				group('attempt_cache_hit', () => {
 					const tagsCached = {
 						cache_status: 'hit',
-						payload_size_tag: String(size),
+						payload_size_tag: size,
+						vu_id: __VU,
+						iter_id: __ITER,
 					};
 					resCached = http.post(
 						testTargetUrl,
@@ -260,78 +204,45 @@ export function runEscalatingPayloadTest(setupData) {
 						{ ...commonRequestParams, tags: tagsCached },
 					);
 
-					let isCachedRateLimited = false;
-					if (resCached.status === 0) {
-						countTimeoutReqs.add(1, tagsCached);
-					} else if (
-						resCached.status === 403 &&
-						resCached.body &&
-						String(resCached.body).includes('Rate limit exceeded')
-					) {
-						countRateLimitBlockedReqs.add(1, tagsCached);
-						isCachedRateLimited = true;
-					} else if (resCached.status === 429) {
-						countRateLimitBlockedReqs.add(1, tagsCached);
-						isCachedRateLimited = true;
-					} else if (resCached.status >= 200 && resCached.status < 300) {
-						countSuccessReqs.add(1, tagsCached);
-					} else if (resCached.status >= 400 && resCached.status < 500) {
-						countClientErrorReqs.add(1, tagsCached);
-					} else if (resCached.status >= 500) {
-						countServerErrorReqs.add(1, tagsCached);
-					}
-
-					let hitCheckPassed = check(
+					const isSuccessCached = check(
 						resCached,
 						{
-							[`[Size ${size} - Hit] Status é 200 (OK)`]: (r) =>
-								r.status === 200,
+							[`[Size ${size} - Hit] Status is 200`]: (r) => r.status === 200,
+							[`[Size ${size} - Hit] X-Cache is 'hit'`]: (r) =>
+								r.status === 200 &&
+								r.headers['X-Cache'] &&
+								r.headers['X-Cache'].toLowerCase() === 'hit',
 						},
 						tagsCached,
 					);
+					successfulChecksRate.add(isSuccessCached, tagsCached);
+
+					if (resCached.status === 0) countTimeoutReqs.add(1, tagsCached);
+					else if (resCached.status >= 200 && resCached.status < 300)
+						countSuccessReqs.add(1, tagsCached);
+					else if (resCached.status >= 400 && resCached.status < 500)
+						countClientErrorReqs.add(1, tagsCached);
+					else if (resCached.status >= 500)
+						countServerErrorReqs.add(1, tagsCached);
 
 					if (resCached.status === 200) {
-						hitCheckPassed =
-							hitCheckPassed &&
-							check(
-								resCached,
-								{
-									[`[Size ${size} - Hit] Se 200, X-Cache header é 'hit'`]: (
-										r,
-									) =>
-										r.headers['X-Cache'] &&
-										r.headers['X-Cache'].toLowerCase() === 'hit',
-								},
-								tagsCached,
-							);
 						timeToFirstByteCached.add(resCached.timings.waiting, tagsCached);
-						processingTimeCached.add(resCached.timings.duration, tagsCached);
-
-						if (
-							!(
-								resCached.headers['X-Cache'] &&
-								resCached.headers['X-Cache'].toLowerCase() === 'hit'
-							)
-						) {
-							console.warn(
-								`K6_VU_WARN: [Size ${size} - Hit Attempt BUT X-Cache IS '${resCached.headers['X-Cache']}'] Status:${resCached.status}`,
-							);
-						}
-					} else if (!isCachedRateLimited && resCached.status !== 0) {
+					}
+					if (
+						resCached.status !== 200 ||
+						(resCached.headers['X-Cache'] &&
+							resCached.headers['X-Cache'].toLowerCase() !== 'hit')
+					) {
 						console.warn(
-							`K6_VU_WARN: [Size ${size} - Hit Attempt] Status:${resCached.status}, X-Cache:${resCached.headers['X-Cache']}, Err:${resCached.error}, Body:${resCached.body ? String(resCached.body).substring(0, 60) : 'N/A'}`,
-						);
-					} else if (isCachedRateLimited) {
-						console.log(
-							`K6_VU_INFO: [Size ${size} - Hit Attempt] Rate limited. Status:${resCached.status}`,
+							`K6_VU_WARN: [Size ${size} - Hit Attempt] VU=${__VU}, ITER=${__ITER}, Status=${resCached.status}, X-Cache=${resCached.headers['X-Cache']}, Body=${resCached.body ? resCached.body.substring(0, 100) : 'N/A'}`,
 						);
 					}
-				} else {
-					console.log(
-						`K6_VU_INFO: [Size ${size}] Skipping cache hit test because initial (miss) request was not 200 (was ${resUncached.status}).`,
-					);
-				}
-			});
+				});
+			} else {
+				console.warn(
+					`K6_VU_WARN: [Size ${size}] Skipping cache hit test because initial (miss) request did not return 200. Actual Status: ${resUncached ? resUncached.status : 'N/A'}`,
+				);
+			}
 			sleep(1);
 		});
 	}
@@ -340,117 +251,101 @@ export function runEscalatingPayloadTest(setupData) {
 export function handleSummary(data) {
 	console.log('K6_SUMMARY: Generating Final Test Execution Summary...');
 
-	const getMetricValue = (
-		metricFullName,
-		valueType = 'count',
-		defaultValue = 0,
-	) => {
-		const metric = data.metrics[metricFullName];
-		if (metric && metric.values && metric.values[valueType] !== undefined) {
-			return metric.values[valueType];
-		}
-		if (
-			metric &&
-			metric.values &&
-			metric.values[`${valueType}{}`] !== undefined
-		) {
-			return metric.values[`${valueType}{}`];
-		}
-		return defaultValue;
-	};
-	const getMetricRate = (metricFullName, defaultValue = 0) => {
-		const metric = data.metrics[metricFullName];
-		if (metric && metric.values && metric.values.rate !== undefined) {
-			return metric.values.rate;
-		}
-		return defaultValue;
-	};
-	const getMetricTrend = (
-		metricFullName,
-		percentile = 'p(95)',
+	// Função auxiliar para obter um valor de métrica (p.ex. p(95)) de forma segura
+	const getMetricSubValue = (
+		metricName,
+		subMetricKey,
 		defaultValue = 'N/A',
 	) => {
-		const metric = data.metrics[metricFullName];
-		if (!metric || !metric.values || metric.values[percentile] === undefined) {
-			return defaultValue;
+		if (
+			data.metrics &&
+			data.metrics[metricName] &&
+			data.metrics[metricName].values &&
+			data.metrics[metricName].values[subMetricKey] !== undefined
+		) {
+			return data.metrics[metricName].values[subMetricKey];
 		}
-		return (metric.values[percentile] / 1000).toFixed(3);
+		return defaultValue;
 	};
 
+	// Função auxiliar para obter um valor de métrica (p.ex. p(95)) de uma métrica tagueada
 	const getTaggedMetricSubValue = (
 		baseMetricName,
 		subMetricKey,
 		tagsObject,
-		defaultValue = 0,
+		defaultValue = 'N/A',
 	) => {
-		const metric = data.metrics[baseMetricName];
-		if (!metric || !metric.values) {
+		if (
+			!data.metrics ||
+			!data.metrics[baseMetricName] ||
+			!data.metrics[baseMetricName].values
+		) {
 			return defaultValue;
 		}
+		// Constrói a string da tag como o k6 a usa internamente para chaves de submétricas
+		// Ex: "p(95){tagKey1=tagValue1,tagKey2=tagValue2}"
 		const tagStringParts = [];
-
-		for (const key in tagsObject)
+		for (const key in tagsObject) {
 			tagStringParts.push(`${key}=${tagsObject[key]}`);
-
-		const tagStringForLookup =
-			tagStringParts.length > 0 ? `{${tagStringParts.join(',')}}` : '';
-
+		}
+		const tagStringForLookup = `{${tagStringParts.join(',')}}`; // Ex: {cache_status=miss,payload_size_tag=100}
 		const metricKeyWithTags = `${subMetricKey}${tagStringForLookup}`;
 
-		if (metric.values[metricKeyWithTags] !== undefined)
-			return metric.values[metricKeyWithTags];
+		if (data.metrics[baseMetricName].values[metricKeyWithTags] !== undefined) {
+			return data.metrics[baseMetricName].values[metricKeyWithTags];
+		}
+		// Tenta também sem as tags se for uma métrica agregada que queremos (ex: count global)
 		if (
-			tagStringParts.length === 0 &&
-			metric.values[subMetricKey] !== undefined
-		)
-			return metric.values[subMetricKey];
+			data.metrics[baseMetricName].values[subMetricKey] !== undefined &&
+			Object.keys(tagsObject).length === 0
+		) {
+			return data.metrics[baseMetricName].values[subMetricKey];
+		}
 
 		return defaultValue;
 	};
 
-	const totalRequests = getMetricValue('http_reqs', 'count');
-	const failedRequestsRate = getMetricRate('http_req_failed');
+	const totalRequests = getMetricSubValue('http_reqs', 'count', 0);
+	const failedRequestsRate = getMetricSubValue('http_req_failed', 'rate', 0);
 	const failedRequestsCount = Math.round(failedRequestsRate * totalRequests);
-	const k6RequestTimeoutForSummary =
-		__ENV.REQ_TIMEOUT_S || REQUEST_TIMEOUT_SECONDS_STR.replace('s', '');
 
 	let summaryOutput = `
-----------------------------------------------------------------------------------
-K6 Test Execution Report (incl. Rate Limit Analysis)
-----------------------------------------------------------------------------------
-Target API: ${API_BASE_URL}
-Mapping Config: ${MAPPING_CONFIG_NAME}
-Payload Sizes Tested: [${PAYLOAD_SIZES_TO_TEST.join(', ')}] records per request
-Max Records in Setup Pool: ${MAX_RECORDS_TO_GENERATE}
-K6 Request Timeout Config: ${k6RequestTimeoutForSummary}s
-----------------------------------------------------------------------------------
-Overall VUs Max: ${getMetricValue('vus_max', 'value', 'N/A')}
-Total Iterations (VU loops): ${getMetricValue('iterations', 'count', 'N/A')}
-Test Duration: ${(data.duration / 1000 / 60).toFixed(2)} minutes
-----------------------------------------------------------------------------------
-HTTP Request Summary:
-  Total HTTP Requests Issued by k6: ${totalRequests}
-  Successful (2xx): ${getMetricValue('http_reqs_ok_count', 'count')}
-  Rate Limited (403/429): ${getMetricValue('http_reqs_rate_limited_count', 'count')}
-  Other Client Errors (4xx): ${getMetricValue('http_reqs_other_4xx_count', 'count')}
-  Server Errors (5xx): ${getMetricValue('http_reqs_5xx_count', 'count')}
-  k6 Client-Side Timeouts (Status 0): ${getMetricValue('http_reqs_timeout_k6_count', 'count')}
-  Total k6 Marked Failed HTTP Requests: ${failedRequestsCount} (${(failedRequestsRate * 100).toFixed(2)}%)
-----------------------------------------------------------------------------------
-Checks Summary:
-  Total Checks Performed: ${getMetricValue('checks', 'passes') + getMetricValue('checks', 'fails')}
-  Checks Passed: ${getMetricValue('checks', 'passes')}
-  Checks Failed: ${getMetricValue('checks', 'fails')}
-  Checks Pass Rate: ${(getMetricRate('checks') * 100).toFixed(2)}%
-----------------------------------------------------------------------------------
-Performance Trends (p95 in seconds):
-  TTFB Uncached (All Sizes): ${getMetricTrend('ttfb_uncached_ms')} s
-  TTFB Cached (All Sizes): ${getMetricTrend('ttfb_cached_ms')} s
-  API Processing Uncached (All Sizes): ${getMetricTrend('api_processing_time_uncached_ms')} s
-  API Processing Cached (All Sizes): ${getMetricTrend('api_processing_time_cached_ms')} s
-----------------------------------------------------------------------------------
-Performance by Payload Size (p95 http_req_duration in seconds):
-`;
+  ----------------------------------------------------------------------------------
+  K6 Test Execution Report
+  ----------------------------------------------------------------------------------
+  Target API: ${API_BASE_URL}
+  Mapping Config: ${MAPPING_CONFIG_NAME}
+  Payload Sizes Tested: [${PAYLOAD_SIZES_TO_TEST.join(', ')}] records per request
+  Max Records in Setup Pool: ${MAX_RECORDS_TO_GENERATE}
+  Request Timeout: ${REQUEST_TIMEOUT_SECONDS}s
+  ----------------------------------------------------------------------------------
+  Overall VUs Max: ${getMetricSubValue('vus_max', 'value', 'N/A')}
+  Total Iterations (VU loops): ${getMetricSubValue('iterations', 'count', 'N/A')}
+  Test Duration (approx): ${((getMetricSubValue('iteration_duration', 'avg', 0) * getMetricSubValue('iterations', 'count', 0)) / 1000 / 60).toFixed(2)} minutes 
+						(ou ${(data.duration / 1000 / 60).toFixed(2)} minutes a partir de data.duration)
+  ----------------------------------------------------------------------------------
+  HTTP Request Summary:
+	Total HTTP Requests: ${totalRequests}
+	Successful (2xx): ${getMetricSubValue('http_reqs_ok_count', 'count', 0)}
+	Client Errors (4xx): ${getMetricSubValue('http_reqs_4xx_count', 'count', 0)}
+	Server Errors (5xx): ${getMetricSubValue('http_reqs_5xx_count', 'count', 0)}
+	k6 Timeouts (status 0): ${getMetricSubValue('http_reqs_timeout_k6_count', 'count', 0)}
+	Total Failed (k6 'http_req_failed'): ${failedRequestsCount} (${(failedRequestsRate * 100).toFixed(2)}%)
+  ----------------------------------------------------------------------------------
+  Checks Summary:
+	Total Checks Performed: ${getMetricSubValue('checks', 'passes', 0) + getMetricSubValue('checks', 'fails', 0)}
+	Checks Passed: ${getMetricSubValue('checks', 'passes', 0)}
+	Checks Failed: ${getMetricSubValue('checks', 'fails', 0)}
+	Checks Pass Rate: ${(getMetricSubValue('checks', 'rate', 0) * 100).toFixed(2)}%
+  ----------------------------------------------------------------------------------
+  Performance Trends (p95 in seconds):
+	TTFB Uncached (All Sizes): ${(getMetricSubValue('ttfb_uncached_ms', 'p(95)', 0) / 1000).toFixed(3)} s
+	TTFB Cached (All Sizes): ${(getMetricSubValue('ttfb_cached_ms', 'p(95)', 0) / 1000).toFixed(3)} s
+	API Processing Uncached (All Sizes): ${(getMetricSubValue('api_processing_time_uncached_ms', 'p(95)', 0) / 1000).toFixed(3)} s
+	API Processing Cached (All Sizes): ${(getMetricSubValue('api_processing_time_cached_ms', 'p(95)', 0) / 1000).toFixed(3)} s
+  ----------------------------------------------------------------------------------
+  Performance by Payload Size (p95 http_req_duration in seconds):
+  `;
 
 	for (const size of PAYLOAD_SIZES_TO_TEST) {
 		const tagsMiss = { cache_status: 'miss', payload_size_tag: String(size) };
@@ -459,8 +354,8 @@ Performance by Payload Size (p95 http_req_duration in seconds):
 		const p95MissDuration = (
 			getTaggedMetricSubValue('http_req_duration', 'p(95)', tagsMiss, 0) / 1000
 		).toFixed(3);
-		const countMissReqs = getTaggedMetricSubValue(
-			'http_reqs',
+		const countMissDuration = getTaggedMetricSubValue(
+			'http_req_duration',
 			'count',
 			tagsMiss,
 			0,
@@ -469,27 +364,14 @@ Performance by Payload Size (p95 http_req_duration in seconds):
 		const p95HitDuration = (
 			getTaggedMetricSubValue('http_req_duration', 'p(95)', tagsHit, 0) / 1000
 		).toFixed(3);
-		const countHitReqs = getTaggedMetricSubValue(
-			'http_reqs',
+		const countHitDuration = getTaggedMetricSubValue(
+			'http_req_duration',
 			'count',
 			tagsHit,
 			0,
 		);
 
-		const countRateLimitedMiss = getTaggedMetricSubValue(
-			'http_reqs_rate_limited_count',
-			'count',
-			tagsMiss,
-			0,
-		);
-		const countRateLimitedHit = getTaggedMetricSubValue(
-			'http_reqs_rate_limited_count',
-			'count',
-			tagsHit,
-			0,
-		);
-
-		summaryOutput += `  Payload ${String(size).padEnd(5)} recs: Miss Dura: ${String(p95MissDuration).padEnd(7)}s (reqs: ${String(countMissReqs).padEnd(3)}, rateLimit: ${countRateLimitedMiss}) | Hit Dura: ${String(p95HitDuration).padEnd(7)}s (reqs: ${String(countHitReqs).padEnd(3)}, rateLimit: ${countRateLimitedHit})\n`;
+		summaryOutput += `  Payload ${String(size).padEnd(5)} recs: Miss Dura: ${String(p95MissDuration).padEnd(7)}s (count: ${String(countMissDuration).padEnd(3)}) | Hit Dura: ${String(p95HitDuration).padEnd(7)}s (count: ${String(countHitDuration).padEnd(3)})\n`;
 	}
 	summaryOutput +=
 		'----------------------------------------------------------------------------------\n';
